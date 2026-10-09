@@ -55,4 +55,12 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 - **Stones:** an evolution stone can turn up every few hours.
 - **No harm:** nothing can make your Pokémon faint.
 
-Your party is saved per machine. Sprites are downloaded at runtime, and no Pokémon artwork ships in this repository (Pokémon © Nintendo / Game Freak).
+Your party is saved per machine.
+
+## Legal
+
+This is an unofficial fan project, not affiliated with or endorsed by Nintendo, Game Freak, The Pokémon Company, or Anthropic. Pokémon and Pokémon character names are trademarks of Nintendo, Game Freak and The Pokémon Company.
+
+The code ships no Pokémon artwork: sprites are downloaded at runtime from [PokeAPI](https://pokeapi.co/). The screenshots above show Pokémon sprites © Nintendo / Game Freak.
+
+The code is released under the [MIT License](LICENSE). The license covers the code only, not Pokémon names, data or artwork.
