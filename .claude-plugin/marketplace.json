@@ -2,5 +2,5 @@
   "name": "pokeclaude",
   "description": "Claude Code mods by gabrielminoru",
   "owner": { "name": "gabrielminoru" },
-  "plugins": [{ "name": "pokemon", "source": "./pokemon" }]
+  "plugins": [{ "name": "pokemon", "source": "./" }]
 }

@@ -20,15 +20,15 @@ Answer `y` to add the marketplace, then pick a scope (user scope loads it in eve
 
 To run it from a local copy instead:
 
-1. Put this folder at `~/.claude/mods/pokemon`, so that `~/.claude/mods/pokemon/.claude-plugin/plugin.json` exists.
+1. Clone this repository: `git clone https://github.com/gabrielminoru/pokeclaude.git ~/pokeclaude`
 2. Open `~/.claude/settings.json` and add this line inside `"env"` (create the `"env": { }` block if it isn't there):
    ```json
-   "CLAUDE_CODE_PLUGIN_DIRS": "~/.claude/mods/pokemon"
+   "CLAUDE_CODE_PLUGIN_DIRS": "~/pokeclaude"
    ```
-   If you already have a `CLAUDE_CODE_PLUGIN_DIRS`, append `:~/.claude/mods/pokemon` to it instead.
-3. Start a new Claude Code session (`claude`).
+   If you already have a `CLAUDE_CODE_PLUGIN_DIRS`, append `:~/pokeclaude` to it instead.
+3. Start a new Claude Code session (`claude`). Edits to the folder reload while it runs.
 
-To try it once without touching settings, run `claude --plugin-dir ~/.claude/mods/pokemon` instead of step 2.
+To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude` instead of step 2.
 
 ## Requirements
 
@@ -55,4 +55,4 @@ To try it once without touching settings, run `claude --plugin-dir ~/.claude/mod
 - **Stones:** an evolution stone can turn up every few hours.
 - **No harm:** nothing can make your Pokémon faint.
 
-Your party is saved per machine. Sprites are downloaded at runtime, and no Pokémon artwork ships in this folder (Pokémon © Nintendo / Game Freak).
+Your party is saved per machine. Sprites are downloaded at runtime, and no Pokémon artwork ships in this repository (Pokémon © Nintendo / Game Freak).
