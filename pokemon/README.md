@@ -2,6 +2,10 @@
 
 A Pokémon party above your Claude Code prompt. Pick a starter, meet a wild Pokémon every hour, and level up your active Pokémon with Claude's tool calls. Pokémon evolve by level, stone or friendship.
 
+![Your active Pokémon above the prompt](screenshots/band.png)
+
+![The /party pane with all six sprites](screenshots/party.png)
+
 ## Install
 
 At the prompt of a Claude Code terminal session, type:
