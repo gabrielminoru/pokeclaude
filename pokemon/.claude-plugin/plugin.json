@@ -1,0 +1,1 @@
+{ "name": "pokemon", "version": "0.2.0", "description": "A Pokémon party above your prompt: pick a starter, meet a wild Pokémon every hour, grow the active one with your tool calls, evolve by level, stone or friendship", "author": { "name": "gabrielminoru" }, "types": "./types/index.d.ts" }
