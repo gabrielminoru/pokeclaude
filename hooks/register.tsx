@@ -287,9 +287,30 @@ const rollStone = async ($: EngineInterface, now: number) => {
 
 // --- Evolution ---
 
-const startEvolution = async ($: EngineInterface, member: Member, paths: Path[], stone: Stone | null, now: number) => {
+const takeStone = async ($: EngineInterface, stone: Stone): Promise<boolean> => {
+  let taken = false
+  await edit($, 'bag', bag => {
+    taken = (bag.stones[stone] ?? 0) > 0
+    return taken ? { ...bag, stones: { ...bag.stones, [stone]: (bag.stones[stone] ?? 0) - 1 } } : bag
+  })
+  return taken
+}
+
+const giveStone = ($: EngineInterface, stone: Stone) =>
+  edit($, 'bag', bag => ({ ...bag, stones: { ...bag.stones, [stone]: (bag.stones[stone] ?? 0) + 1 } }))
+
+const claimChoice = async ($: EngineInterface, choiceId: string): Promise<boolean> => {
+  let claimed = false
+  await edit($, 'pending', p => {
+    claimed = p.some(c => c.id === choiceId)
+    return p.filter(c => c.id !== choiceId)
+  })
+  return claimed
+}
+
+const startEvolution = async ($: EngineInterface, member: Member, paths: Path[], stone: Stone | null, now: number): Promise<boolean> => {
   const pending = await load($, 'pending')
-  if (pending.some(c => c.kind === 'evolution' && c.memberId === member.id)) return
+  if (pending.some(c => c.kind === 'evolution' && c.memberId === member.id)) return false
   const choice: Choice = {
     kind: 'evolution', id: `evo-${member.id}-${now}`, createdAt: now, memberId: member.id, paths,
     deadline: now + EVOLUTION_COUNTDOWN, stone,
@@ -298,6 +319,7 @@ const startEvolution = async ($: EngineInterface, member: Member, paths: Path[],
   const hint = paths.length > 1 ? `/pokemon evolve ${paths.map(p => p.name).join('|')} or /pokemon stop` : '/pokemon stop'
   await announce($, `What? ${displayName(member)} is evolving!`, hint)
   $.clock.after(EVOLUTION_COUNTDOWN + 200, () => void settleEvolutions($).catch(() => undefined))
+  return true
 }
 
 const finishEvolution = async ($: EngineInterface, choiceId: string, path: Path): Promise<string> => {
@@ -305,21 +327,14 @@ const finishEvolution = async ($: EngineInterface, choiceId: string, path: Path)
   if (!choice || choice.kind !== 'evolution') return 'Nothing is evolving.'
   const member = (await load($, 'party')).members.find(m => m.id === choice.memberId)
   const edge = member?.chain.edges.find(e => e.to.id === path.id)
-  if (!member || !edge) {
-    await edit($, 'pending', removeChoice(choiceId))
-    return 'That evolution is no longer possible.'
-  }
-  if (choice.stone && !((await load($, 'bag')).stones[choice.stone] ?? 0)) {
-    await edit($, 'pending', removeChoice(choiceId))
-    return `You no longer have a ${title(choice.stone)}.`
-  }
   // Claim the choice first, so a second settle (another session, the tick) does nothing.
-  let claimed = false
-  await edit($, 'pending', p => {
-    claimed = p.some(c => c.id === choiceId)
-    return p.filter(c => c.id !== choiceId)
-  })
-  if (!claimed) return 'Already settled.'
+  if (!(await claimChoice($, choiceId))) return 'Already settled.'
+  if (!member || !edge) {
+    if (choice.stone) await giveStone($, choice.stone)
+    const text = 'That evolution is no longer possible.'
+    $.ui.toast(text)
+    return text
+  }
   await ensureSprite($, path.id, member.shiny).catch(() => false) // on failure the badge shows until the tick retries
   const profile = await profileOf($, path.id).catch(() => undefined)
   const before = displayName(member)
@@ -329,10 +344,6 @@ const finishEvolution = async ($: EngineInterface, choiceId: string, path: Path)
       ? { ...m, speciesId: path.id, name: path.name, chain: edge.to, ...(profile ? { profile } : {}) }
       : m)),
   }))
-  if (choice.stone) {
-    const stone = choice.stone
-    await edit($, 'bag', bag => ({ ...bag, stones: { ...bag.stones, [stone]: Math.max(0, (bag.stones[stone] ?? 0) - 1) } }))
-  }
   await edit($, 'dex', dex => addToDex(dex, path.id, member.shiny, true))
   const text = `✨ Congratulations! Your ${before} evolved into ${title(path.name).toUpperCase()}!`
   $.ui.toast(text)
@@ -342,7 +353,8 @@ const finishEvolution = async ($: EngineInterface, choiceId: string, path: Path)
 const stopEvolution = async ($: EngineInterface, choiceId: string): Promise<string> => {
   const choice = (await load($, 'pending')).find(c => c.id === choiceId)
   if (!choice || choice.kind !== 'evolution') return 'Nothing is evolving.'
-  await edit($, 'pending', removeChoice(choiceId))
+  if (!(await claimChoice($, choiceId))) return 'Already settled.'
+  if (choice.stone) await giveStone($, choice.stone)
   const member = (await load($, 'party')).members.find(m => m.id === choice.memberId)
   const text = `Huh? ${member ? displayName(member) : 'It'} stopped evolving!`
   $.ui.toast(text)
@@ -457,8 +469,12 @@ const useStone = async ($: EngineInterface, stone: Stone, member: Member): Promi
   if (!((await load($, 'bag')).stones[stone] ?? 0)) return `You don't have a ${title(stone)}.`
   const paths = stonePaths(member.chain, stone)
   if (paths.length === 0) return `It won't have any effect on ${displayName(member)}.`
+  if (!(await takeStone($, stone))) return `You don't have a ${title(stone)}.`
   await edit($, 'pending', p => p.filter(c => !(c.kind === 'stone' && c.stone === stone && c.memberId === member.id)))
-  await startEvolution($, member, paths, stone, await $.clock.now())
+  if (!(await startEvolution($, member, paths, stone, await $.clock.now()))) {
+    await giveStone($, stone)
+    return `${displayName(member)} is already evolving.`
+  }
   return `${displayName(member)} reacts to the ${title(stone)}!`
 }
 
@@ -486,7 +502,13 @@ const release = async ($: EngineInterface, member: Member): Promise<string> => {
     return { members, activeId: p.activeId === member.id ? (members[0]?.id ?? null) : p.activeId }
   })
   await edit($, 'progress', p => Object.fromEntries(Object.entries(p).filter(([id]) => id !== member.id)))
-  await edit($, 'pending', p => p.filter(c => !((c.kind === 'evolution' || c.kind === 'stone') && c.memberId === member.id)))
+  const reserved: Stone[] = []
+  await edit($, 'pending', p => p.filter(c => {
+    const mine = (c.kind === 'evolution' || c.kind === 'stone') && c.memberId === member.id
+    if (mine && c.kind === 'evolution' && c.stone) reserved.push(c.stone)
+    return !mine
+  }))
+  for (const stone of reserved) await giveStone($, stone)
   return `${displayName(member)} was released. Bye bye, ${displayName(member)}!`
 }
 
