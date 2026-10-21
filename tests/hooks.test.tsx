@@ -243,6 +243,30 @@ test('a stone evolution: Stop keeps the stone; letting it run evolves and uses i
   expect((db.get('bag') as Bag).stones['fire-stone']).toBe(0)
 })
 
+test('a stone already in an evolution cannot be used on a second Pokémon', async ($, on) => {
+  const a = mon('a', 15, 'vulpix')
+  const b = mon('b', 15, 'vulpix')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([a, b]), progress: progressOf([a, b]), bag: { stones: { 'fire-stone': 1 }, received: [] } })
+  await start($, clock)
+  expect(await run($, 'bag', 'use fire 1')).toContain('reacts to the Fire Stone')
+  expect(await run($, 'bag', 'use fire 2')).toContain('The Fire Stone is already in use.')
+  await clock.advance(16_000)
+  expect((db.get('party') as Party).members.map(m => m.name)).toEqual(['ninetales', 'vulpix'])
+  expect((db.get('bag') as Bag).stones['fire-stone']).toBe(0)
+})
+
+test('two stones can evolve two Pokémon at once', async ($, on) => {
+  const a = mon('a', 15, 'vulpix')
+  const b = mon('b', 15, 'vulpix')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([a, b]), progress: progressOf([a, b]), bag: { stones: { 'fire-stone': 2 }, received: [] } })
+  await start($, clock)
+  expect(await run($, 'bag', 'use fire 1')).toContain('reacts to the Fire Stone')
+  expect(await run($, 'bag', 'use fire 2')).toContain('reacts to the Fire Stone')
+  await clock.advance(16_000)
+  expect((db.get('party') as Party).members.map(m => m.name)).toEqual(['ninetales', 'ninetales'])
+  expect((db.get('bag') as Bag).stones['fire-stone']).toBe(0)
+})
+
 test('a branching evolution nobody chooses counts as Stop', async ($, on) => {
   const eevee = mon('e', 67, 'eevee')
   const evolving: Choice = {
