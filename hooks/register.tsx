@@ -2,14 +2,15 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Bag, Choice, Dex, Member, Meta, Party, Path, Progress, Stone } from '../types'
-import { SPECIES_COUNT, STONES, parseForm, parseOffset, parseSpecies, parseTypes, spritePath, spriteUrl } from './pokeapi'
-import type { RawNode, RawSpecies, SpeciesInfo } from './pokeapi'
+import { SPECIES_COUNT, STONES, parseForm, parseOffset, parseProfile, parseSpecies, parseTypes, spritePath, spriteUrl } from './pokeapi'
+import type { RawNode, RawPokemon, RawSpecies, SpeciesInfo } from './pokeapi'
 import {
   ENCOUNTER_ATTEMPTS, MOOD_LABEL, bar, energyOf, EVOLUTION_COUNTDOWN, HOUR, PARTY_SIZE, START_FRIENDSHIP, STARTERS,
   acceptChance, bucketOf, displayName, encounterLevel, findTarget, friendshipStep, gainCall, hourOf, isShiny,
   levelUpPaths, localHour, moodOf, newProgress, nextEvolutionText, rngFor, sortChoices, stoneFor, stonePaths,
   stoneTarget, title, typeFactor, upsertChoice, xpToNext,
 } from './rules'
+import { STAT_ROWS, emptyProfile, statBar, statLine, typeColor } from './cards'
 
 
 // --- The ways out: PokeAPI, the file cache, sprites, the clock offset (each one `$` call a test can stub) ---
@@ -38,6 +39,10 @@ const speciesInfo = async ($: EngineInterface, idOrName: number | string) =>
 
 const formOf = async ($: EngineInterface, species: SpeciesInfo) =>
   parseForm((await fetchJson($, `evolution-chain/${species.chainId}`)) as { chain: RawNode }, species.name)
+
+/** A species' own numbers: its types, its base stats and its ability. */
+const profileOf = async ($: EngineInterface, id: number) =>
+  parseProfile((await fetchJson($, `pokemon/${id}`)) as RawPokemon)
 
 const typesOf = async ($: EngineInterface, id: number) =>
   parseTypes((await fetchJson($, `pokemon/${id}`)) as { types: { type: { name: string } }[] })
@@ -182,8 +187,10 @@ const chooseStarter = async ($: EngineInterface, name: string): Promise<string> 
     const species = await speciesInfo($, starter.id)
     const chain = await formOf($, species)
     await ensureSprite($, starter.id, false).catch(() => false)
+    const profile = await profileOf($, starter.id).catch(() => undefined)
     const member: Member = {
       id: crypto.randomUUID(), speciesId: starter.id, name: starter.name, chain, shiny: false, nickname: null, caughtAt: now,
+      ...(profile ? { profile } : {}),
     }
     let added = false
     await edit($, 'party', party => {
@@ -314,10 +321,13 @@ const finishEvolution = async ($: EngineInterface, choiceId: string, path: Path)
   })
   if (!claimed) return 'Already settled.'
   await ensureSprite($, path.id, member.shiny).catch(() => false) // on failure the badge shows until the tick retries
+  const profile = await profileOf($, path.id).catch(() => undefined)
   const before = displayName(member)
   await edit($, 'party', party => ({
     ...party,
-    members: party.members.map(m => (m.id === member.id ? { ...m, speciesId: path.id, name: path.name, chain: edge.to } : m)),
+    members: party.members.map(m => (m.id === member.id
+      ? { ...m, speciesId: path.id, name: path.name, chain: edge.to, ...(profile ? { profile } : {}) }
+      : m)),
   }))
   if (choice.stone) {
     const stone = choice.stone
@@ -354,6 +364,18 @@ const settleEvolutions = async ($: EngineInterface) => {
 let ticking = false
 let lastMeal = '' // the last tool that fed the active Pokémon, shown while a turn runs
 
+/** Fills in a member's missing profile, for a Pokémon caught before the plugin knew about them. */
+const fillProfile = async ($: EngineInterface, memberId: string): Promise<void> => {
+  const member = (await load($, 'party')).members.find(m => m.id === memberId)
+  if (!member || member.profile) return
+  const profile = await profileOf($, member.speciesId).catch(() => undefined)
+  if (!profile) return
+  await edit($, 'party', party => ({
+    ...party,
+    members: party.members.map(m => (m.id === memberId ? { ...m, profile } : m)),
+  }))
+}
+
 const tick = async ($: EngineInterface) => {
   if (ticking) return
   ticking = true
@@ -366,6 +388,7 @@ const tick = async ($: EngineInterface) => {
     await rollStone($, now).catch(() => undefined)
     for (const member of (await load($, 'party')).members) {
       await ensureSprite($, member.speciesId, member.shiny).catch(() => false)
+      if (!member.profile) await fillProfile($, member.id)
     }
     const naming = await read($, namingAtom)
     if (naming && naming.until <= now) await update($, namingAtom, () => null)
@@ -401,9 +424,11 @@ const keepEncounter = async ($: EngineInterface, nickname?: string): Promise<str
   }
   if (party.members.length >= PARTY_SIZE) return 'Your party is full (6). Release one first: /pokemon release <slot>.'
   const now = await $.clock.now()
+  const profile = await profileOf($, choice.speciesId).catch(() => undefined)
   const member: Member = {
     id: choice.id, speciesId: choice.speciesId, name: choice.name, chain: choice.chain, shiny: choice.shiny,
     nickname: nickname?.trim() ? nickname.trim().slice(0, 12) : null, caughtAt: now,
+    ...(profile ? { profile } : {}),
   }
   let added = false
   await edit($, 'party', p => {
@@ -479,11 +504,16 @@ const switchTo = async ($: EngineInterface, member: Member): Promise<string> => 
 
 const statsText = (member: Member, progress: Progress | undefined, now: number) => {
   const p = progress ?? newProgress(5, START_FRIENDSHIP, now)
-  return [
+  const profile = member.profile ?? emptyProfile
+  const lines = [
     `${member.shiny ? '✨ ' : ''}${displayName(member)}  ${title(member.name)} #${member.speciesId}  Lv. ${p.level}`,
-    `EXP ${p.xp}/${xpToNext(p.level)}  ·  mood ${moodOf(p, now)}  ·  friendship ${p.friendship}/255`,
-    `Evolves: ${nextEvolutionText(member.chain)}`,
-  ].join('\n')
+  ]
+  if (profile.types.length > 0) lines.push(profile.types.map(title).join(' · '))
+  if (profile.ability) lines.push(`Ability: ${title(profile.ability)}`)
+  if (profile.stats.hp > 0) lines.push(statLine(profile.stats))
+  lines.push(`EXP ${p.xp}/${xpToNext(p.level)}  ·  mood ${moodOf(p, now)}  ·  friendship ${p.friendship}/255`)
+  lines.push(`Evolves: ${nextEvolutionText(member.chain)}`)
+  return lines.join('\n')
 }
 
 const partyText = (party: Party, progress: Record<string, Progress>) =>
@@ -696,12 +726,16 @@ export const register: Register = on => {
     const mine = progress[active.id] ?? newProgress(5, START_FRIENDSHIP, now)
     const mood = moodOf(mine, now)
     const named = naming && naming.until > now ? party.members.find(m => m.id === naming.memberId) : undefined
+    const profile = active.profile ?? emptyProfile
     const header = (
       <Box flexDirection="row" gap={1}>
         <Text bold color={mood === 'excited' ? 'green' : mood === 'bored' ? 'gray' : undefined}>
           {active.shiny ? '✨' : ''}{displayName(active)}
         </Text>
         <Text dimColor>{`${title(active.name)} Lv.${mine.level}`}</Text>
+        {profile.types.map(t => (
+          <Text key={`band-type-${t}`} color={typeColor(t)}>{title(t)}</Text>
+        ))}
       </Box>
     )
 
@@ -773,36 +807,71 @@ export const register: Register = on => {
       const mine = progress[member.id] ?? newProgress(5, START_FRIENDSHIP, now)
       const isActive = member.id === party.activeId
       const hasSprite = Image !== null && (await spriteExists($, member.speciesId, member.shiny))
+      const profile = member.profile ?? emptyProfile
       rows.push(
-        <Box key={`row-${member.id}`} flexDirection="row" gap={1}>
-          {Image && hasSprite ? (
-            <Image
-              key={`pane-sprite-${member.id}-${member.speciesId}`}
-              source={{ file: spritePath(dir, member.speciesId, member.shiny), format: 'png' }}
-              columns={8}
-              rows={4}
-              alt={`[${title(member.name)}]`}
-            />
-          ) : (
-            <Text>[{title(member.name)}]</Text>
-          )}
-          <Box flexDirection="column">
-            <Text bold={isActive}>
-              {index + 1}. {member.shiny ? '✨' : ''}{displayName(member)} {title(member.name)} Lv.{mine.level}{isActive ? '  ▶ active' : ''}
-            </Text>
-            <Text dimColor>{moodOf(mine, now)} · friendship {mine.friendship} · {nextEvolutionText(member.chain)}</Text>
-            {renaming === member.id && Input ? (
-              <Input key={`rename-${member.id}`} label="New nickname" placeholder="Empty clears it" onSubmit={(value: string) => void rename($, member.id, value)} />
+        <Box
+          key={`row-${member.id}`}
+          flexDirection="column"
+          borderStyle="round"
+          borderColor={isActive ? 'permission' : undefined}
+          borderDimColor={!isActive}
+          paddingX={1}
+          paddingY={0}
+        >
+          <Box flexDirection="row" gap={1}>
+            {Image && hasSprite ? (
+              <Image
+                key={`pane-sprite-${member.id}-${member.speciesId}`}
+                source={{ file: spritePath(dir, member.speciesId, member.shiny), format: 'png' }}
+                columns={8}
+                rows={4}
+                alt={`[${title(member.name)}]`}
+              />
             ) : (
-              <Box flexDirection="row" gap={1}>
-                {!isActive && <Button key={`active-${member.id}`} label="Make active" onPress={() => void switchTo($, member)} />}
-                <Button key={`rename-btn-${member.id}`} label="Rename" onPress={() => void update($, renamingAtom, () => member.id)} />
-                {party.members.length > 1 && (
-                  <Button key={`release-${member.id}`} label="Release" onPress={() => void release($, member).then(text => $.ui.toast(text))} />
-                )}
-              </Box>
+              <Text dimColor>[{title(member.name)}]</Text>
             )}
+            <Box flexDirection="column" flexGrow={1}>
+              <Box flexDirection="row" gap={1}>
+                <Text dimColor>{index + 1}.</Text>
+                <Text bold={isActive}>
+                  {member.shiny ? '✨' : ''}{displayName(member)}
+                </Text>
+                <Text dimColor>{title(member.name)} Lv.{mine.level}</Text>
+                {isActive && <Text color="permission">▶ active</Text>}
+              </Box>
+              {profile.types.length > 0 && (
+                <Box flexDirection="row" gap={1}>
+                  {profile.types.map(t => (
+                    <Text key={`type-${member.id}-${t}`} color={typeColor(t)}>{title(t)}</Text>
+                  ))}
+                </Box>
+              )}
+              {profile.stats.hp > 0 && (
+                <Box flexDirection="column">
+                  {STAT_ROWS.map((row, i) => (
+                    <Box key={`stat-row-${member.id}-${i}`} flexDirection="row" gap={2}>
+                      {row.map(s => (
+                        <Text key={`stat-${member.id}-${s.key}`} dimColor>{`${s.label} ${statBar(profile.stats[s.key])} ${profile.stats[s.key]}`}</Text>
+                      ))}
+                    </Box>
+                  ))}
+                </Box>
+              )}
+              {profile.ability && <Text dimColor>Ability: {title(profile.ability)}</Text>}
+              <Text dimColor>{moodOf(mine, now)} · friendship {mine.friendship} · {nextEvolutionText(member.chain)}</Text>
+            </Box>
           </Box>
+          {renaming === member.id && Input ? (
+            <Input key={`rename-${member.id}`} label="New nickname" placeholder="Empty clears it" onSubmit={(value: string) => void rename($, member.id, value)} />
+          ) : (
+            <Box flexDirection="row" gap={1}>
+              {!isActive && <Button key={`active-${member.id}`} label="Make active" onPress={() => void switchTo($, member)} />}
+              <Button key={`rename-btn-${member.id}`} label="Rename" onPress={() => void update($, renamingAtom, () => member.id)} />
+              {party.members.length > 1 && (
+                <Button key={`release-${member.id}`} label="Release" onPress={() => void release($, member).then(text => $.ui.toast(text))} />
+              )}
+            </Box>
+          )}
         </Box>,
       )
     }
