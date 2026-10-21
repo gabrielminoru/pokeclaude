@@ -822,7 +822,7 @@ export const register: Register = on => {
         ) : (
           <Text>[{title(active.name)}]</Text>
         )}
-        <Box flexDirection="column">
+        <Box flexDirection="column" alignSelf="center">
           {header}
           <Text dimColor>{`Mood ${bar(energyOf(mine, now))}  ${MOOD_LABEL[mood]}`}</Text>
           <Text dimColor>

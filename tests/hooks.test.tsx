@@ -358,7 +358,7 @@ test('the dex lists the species you have seen and caught', async ($, on) => {
     dex: { seen: [4, 37], caught: [4], shinies: [] },
   })
   await start($, clock)
-  expect(await run($, 'pokedex', '')).toContain('Seen 2/1025 · Caught 1/1025')
+  expect(await run($, 'pokedex', '')).toContain('Seen 2/151 · Caught 1/151')
   expect(await run($, 'pokedex', 'seen')).toContain('Seen (2): Charmander, Vulpix')
   expect(await run($, 'pokedex', 'caught')).toContain('Caught (1): Charmander')
   expect(await run($, 'pokedex', '37')).toContain('#037 Vulpix — seen')
@@ -377,6 +377,25 @@ test('a long list says how many are left out', async ($, on) => {
   expect(list).toContain('Seen (25):')
   expect(list).toContain('and 5 more')
   expect(await run($, 'pokedex', 'caught')).toBe('Caught: none yet')
+})
+
+const boxes = (node: unknown): { type?: string; props?: Record<string, unknown>; children?: unknown[] }[] => {
+  if (!node || typeof node !== 'object') return []
+  const here = node as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  const kids = Array.isArray(here.children) ? here.children : []
+  return [here, ...kids.flatMap(boxes)]
+}
+
+test('the band centers the text against the sprite', async ($, on) => {
+  const a = withProfile(mon('a', 2, 'charmander', 'BLAZE'))
+  const { clock } = world(on, { meta: meta(), party: partyOf([a]), progress: progressOf([a]) })
+  await start($, clock)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'pokemon', surface, ...BAND })
+    const centered = boxes(await ui.drawn()).filter(n => n.type === 'Box' && n.props?.alignSelf === 'center')
+    expect(centered.length).toBe(1)
+    await ui.unmount()
+  }
 })
 
 test('the party card shows the type, the stat bars and the ability', async ($, on) => {
