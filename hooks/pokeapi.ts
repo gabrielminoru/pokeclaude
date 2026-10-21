@@ -1,4 +1,4 @@
-import type { ChainForm, Condition, Stone, TimeOfDay } from '../types'
+import type { ChainForm, Condition, Profile, Stone, TimeOfDay } from '../types'
 
 export const STONES: readonly Stone[] = [
   'fire-stone', 'water-stone', 'thunder-stone', 'leaf-stone', 'moon-stone',
@@ -119,6 +119,31 @@ export const parseForm = (raw: { chain: RawNode }, speciesName: string): ChainFo
 }
 
 export const parseTypes = (raw: { types: { type: { name: string } }[] }) => raw.types.map(t => t.type.name)
+
+export type RawPokemon = {
+  types: { type: { name: string } }[]
+  stats: { base_stat: number; stat: { name: string } }[]
+  abilities: { ability: { name: string }; is_hidden: boolean }[]
+}
+
+const STAT_KEYS = {
+  hp: 'hp', attack: 'atk', defense: 'def',
+  'special-attack': 'spa', 'special-defense': 'spd', speed: 'spe',
+} as const
+
+export const parseProfile = (raw: RawPokemon): Profile => {
+  const stats = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 }
+  for (const entry of raw.stats ?? []) {
+    const key = STAT_KEYS[entry.stat.name as keyof typeof STAT_KEYS]
+    if (key) stats[key] = entry.base_stat
+  }
+  const visible = (raw.abilities ?? []).find(a => !a.is_hidden) ?? (raw.abilities ?? [])[0]
+  return {
+    types: parseTypes(raw),
+    stats,
+    ability: visible?.ability.name ?? null,
+  }
+}
 
 export const spritePath = (dir: string, id: number, shiny: boolean) =>
   `${dir}/sprites/${shiny ? 'shiny' : 'normal'}/${id}.png`
