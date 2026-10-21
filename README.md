@@ -57,6 +57,10 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 
 Your party is saved per machine.
 
+## The card
+
+Each Pokémon carries its own numbers, read from PokeAPI: its type, its base stats and its ability. The party pane shows them on a card of its own, one per Pokémon, and `/pokemon` prints the active one's in full.
+
 ## Legal
 
 This is an unofficial fan project, not affiliated with or endorsed by Nintendo, Game Freak, The Pokémon Company, or Anthropic. Pokémon and Pokémon character names are trademarks of Nintendo, Game Freak and The Pokémon Company.

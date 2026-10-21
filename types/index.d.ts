@@ -15,6 +15,12 @@ export type Condition =
 export type ChainForm = { name: string; id: number; reachLevel: number; edges: Edge[] }
 export type Edge = { to: ChainForm; conditions: Condition[] }
 
+/** A Pokémon's base stats, as the games read them. */
+export type Stats = { hp: number; atk: number; def: number; spa: number; spd: number; spe: number }
+
+/** What a species' own endpoint says about it. */
+export type Profile = { types: string[]; stats: Stats; ability: string | null }
+
 export type Member = {
   id: string
   speciesId: number
@@ -23,6 +29,7 @@ export type Member = {
   shiny: boolean
   nickname: string | null
   caughtAt: number
+  profile?: Profile
 }
 
 export type Progress = {

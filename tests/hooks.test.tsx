@@ -109,6 +109,10 @@ const mon = (id: string, chainId: number, species: string, nickname: string | nu
   const chain = parseForm(CHAINS[chainId], species)
   return { id, speciesId: chain.id, name: chain.name, chain, shiny: false, nickname, caughtAt: T0 }
 }
+const withProfile = (m: Member): Member => ({
+  ...m,
+  profile: { types: ['fire'], stats: { hp: 39, atk: 52, def: 43, spa: 60, spd: 50, spe: 65 }, ability: 'blaze' },
+})
 const partyOf = (members: Member[]): Party => ({ members, activeId: members[0]?.id ?? null })
 const progressOf = (members: Member[], level = 10): Record<string, Progress> =>
   Object.fromEntries(members.map(m => [m.id, newProgress(level, 70, T0)]))
@@ -293,11 +297,37 @@ test('the party pane lists every member with its buttons', async ($, on) => {
   await start($, clock)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'pokemon', surface, component: 'Pane', requestId: 'pokemon-party', props: { title: 'Pokémon party', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } })
-    expect(await ui.find({ type: 'Text', text: /1\. BLAZE Charmander Lv\.10\s+▶ active/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /BLAZE/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Charmander Lv\.10/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /▶ active/ })).toBeDefined()
     expect(await ui.find({ key: 'active-b' })).toBeDefined()
     expect(await ui.find({ key: 'release-a' })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('the party card shows the type, the stat bars and the ability', async ($, on) => {
+  const a = withProfile(mon('a', 2, 'charmander', 'BLAZE'))
+  const { clock } = world(on, { meta: meta(), party: partyOf([a]), progress: progressOf([a]) })
+  await start($, clock)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'pokemon', surface, component: 'Pane', requestId: 'pokemon-party', props: { title: 'Pokémon party', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } })
+    expect(await ui.find({ type: 'Text', text: 'Fire' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /HP .* 39/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Ability: Blaze' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('a member without a profile has it filled in on the next tick', async ($, on) => {
+  const a = mon('a', 2, 'charmander', 'BLAZE')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([a]), progress: progressOf([a]) })
+  await start($, clock)
+  await clock.advance(60_000)
+  const filled = (db.get('party') as Party).members[0]?.profile
+  expect(filled?.types).toEqual(['fire'])
+  expect(filled?.stats.hp).toBe(39)
+  expect(filled?.ability).toBe('blaze')
 })
 
 test('friendship moves once per 10-minute bucket, however many ticks land in it', async ($, on) => {
