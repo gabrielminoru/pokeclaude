@@ -307,11 +307,15 @@ const finishEvolution = async ($: EngineInterface, choiceId: string, path: Path)
   const edge = member?.chain.edges.find(e => e.to.id === path.id)
   if (!member || !edge) {
     await edit($, 'pending', removeChoice(choiceId))
-    return 'That evolution is no longer possible.'
+    const text = 'That evolution is no longer possible.'
+    $.ui.toast(text)
+    return text
   }
   if (choice.stone && !((await load($, 'bag')).stones[choice.stone] ?? 0)) {
     await edit($, 'pending', removeChoice(choiceId))
-    return `You no longer have a ${title(choice.stone)}.`
+    const text = `You no longer have a ${title(choice.stone)}.`
+    $.ui.toast(text)
+    return text
   }
   // Claim the choice first, so a second settle (another session, the tick) does nothing.
   let claimed = false

@@ -267,6 +267,19 @@ test('two stones can evolve two Pokémon at once', async ($, on) => {
   expect((db.get('bag') as Bag).stones['fire-stone']).toBe(0)
 })
 
+test('an evolution that no longer has its stone says so', async ($, on) => {
+  const vulpix = mon('v', 15, 'vulpix')
+  const evolving: Choice = {
+    kind: 'evolution', id: 'evo-v', createdAt: T0, memberId: 'v', deadline: T0 + 15_000, stone: 'fire-stone',
+    paths: [{ id: 38, name: 'ninetales' }],
+  }
+  const { clock, state, db } = world(on, { meta: meta(), party: partyOf([vulpix]), progress: progressOf([vulpix]), pending: [evolving], bag: { stones: {}, received: [] } })
+  await start($, clock)
+  await clock.advance(60_000)
+  expect(state.toasts.some(t => t.includes('You no longer have a Fire Stone.'))).toBe(true)
+  expect((db.get('party') as Party).members[0]?.name).toBe('vulpix')
+})
+
 test('a branching evolution nobody chooses counts as Stop', async ($, on) => {
   const eevee = mon('e', 67, 'eevee')
   const evolving: Choice = {
