@@ -4,8 +4,9 @@ import type { ChainForm, Member, Meta, Progress } from '../types'
 import { classify, conditionsFor, fallbackLevel, parseForm, parseOffset } from '../hooks/pokeapi'
 import {
   HOUR, encounterLevel, findTarget, friendshipStep, gainCall, generationCount, generationName, generationOf,
-  generationRange, isShiny, levelUpPaths, moodOf, newProgress, parseGeneration, parseStage, rngFor, sortChoices,
-  speciesIdFor, stageOf, stoneFor, stonePaths, stoneTarget, timeMatches,
+  generationRange, isShiny, levelCapOf, levelCapValue, levelUpPaths, moodOf, newProgress, parseGeneration,
+  parseLevelCap, parseStage, rngFor, sortChoices, speciesIdFor, stageOf, stoneFor, stonePaths, stoneTarget,
+  timeMatches,
 } from '../hooks/rules'
 import { CHAINS } from './fixtures'
 
@@ -227,4 +228,23 @@ test('stages: base forms only by default, and only base and all are known', asyn
   expect(parseStage('base')).toBe('base')
   expect(parseStage('ALL')).toBe('all')
   expect(parseStage('evolved')).toBe(null)
+})
+
+test('the level cap: the party best by default, a fixed one, or none', async () => {
+  expect(levelCapOf(null)).toBe('party')
+  expect(levelCapValue('party', [5, 12])).toBe(12)
+  expect(levelCapValue('party', [])).toBe(5)
+  expect(levelCapValue('off', [5, 12])).toBe(Infinity)
+  expect(levelCapValue(20, [5, 12])).toBe(20)
+  expect(levelCapValue(3, [5])).toBe(5)
+  expect(parseLevelCap('off')).toBe('off')
+  expect(parseLevelCap('party')).toBe('party')
+  expect(parseLevelCap('25')).toBe(25)
+  expect(parseLevelCap('nope')).toBe(null)
+})
+
+test('the encounter level never goes past the cap', async () => {
+  expect(encounterLevel(5, () => 0.9, 20)).toBe(8)
+  expect(encounterLevel(36, () => 0.9, 20)).toBe(20)
+  expect(encounterLevel(36, () => 0.9)).toBe(39)
 })

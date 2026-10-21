@@ -13,8 +13,22 @@ const H0 = Math.floor(T0 / HOUR)
 const HOME = '/Users/trainer'
 const DATA = `${HOME}/.claude/plugins/data/pokemon`
 
+/** A chain where the species is only reached at level 30, like a late form. */
+const lateChain = (id: number, name: string, url: string) => ({
+  id,
+  chain: {
+    species: { name: 'ancestor', url: 'https://pokeapi.co/api/v2/pokemon-species/1/' },
+    evolution_details: [],
+    evolves_to: [{
+      species: { name, url },
+      evolution_details: [{ trigger: { name: 'level-up' }, min_level: 30 }],
+      evolves_to: [],
+    }],
+  },
+})
+
 /** Any species id PokeAPI is asked about: real fixtures where we have them, else a plain single-stage Pokémon. */
-const answer = (url: string, evolved = false): { status: number; text: string } => {
+const answer = (url: string, world: { evolved: boolean; advanced: boolean }): { status: number; text: string } => {
   const list = /pokemon-species\?limit=(\d+)$/.exec(url)
   const species = /pokemon-species\/(\d+)$/.exec(url)
   const chain = /evolution-chain\/(\d+)$/.exec(url)
@@ -33,14 +47,19 @@ const answer = (url: string, evolved = false): { status: number; text: string } 
       evolution_chain: { url: `https://pokeapi.co/api/v2/evolution-chain/${100_000 + id}/` },
     }
     const from = { name: 'predecessor', url: 'https://pokeapi.co/api/v2/pokemon-species/1/' }
-    return { status: 200, text: JSON.stringify(evolved ? { ...found, evolves_from_species: from } : found) }
+    return { status: 200, text: JSON.stringify(world.evolved ? { ...found, evolves_from_species: from } : found) }
   }
   if (chain) {
     const id = Number(chain[1])
     const solo = id - 100_000
-    const found = CHAINS[id] ?? {
-      id, chain: { species: { name: `mon-${solo}`, url: `https://pokeapi.co/api/v2/pokemon-species/${solo}/` }, evolution_details: [], evolves_to: [] },
-    }
+    const fixture = CHAINS[id]
+    const name = fixture?.chain.species.name ?? `mon-${solo}`
+    const url = fixture?.chain.species.url ?? `https://pokeapi.co/api/v2/pokemon-species/${solo}/`
+    const found = world.advanced
+      ? lateChain(id, name, url)
+      : fixture ?? {
+        id, chain: { species: { name: `mon-${solo}`, url: `https://pokeapi.co/api/v2/pokemon-species/${solo}/` }, evolution_details: [], evolves_to: [] },
+      }
     return { status: 200, text: JSON.stringify(found) }
   }
   if (pokemon) {
@@ -50,10 +69,10 @@ const answer = (url: string, evolved = false): { status: number; text: string } 
   return { status: 404, text: '{}' }
 }
 
-type World = { toasts: string[]; files: Set<string>; offline: { sprites: boolean; api: boolean }; evolved: boolean }
+type World = { toasts: string[]; files: Set<string>; offline: { sprites: boolean; api: boolean }; evolved: boolean; advanced: boolean }
 
 const world = (on: On, store: Record<string, unknown> = {}, now = T0) => {
-  const state: World = { toasts: [], files: new Set(), offline: { sprites: false, api: false }, evolved: false }
+  const state: World = { toasts: [], files: new Set(), offline: { sprites: false, api: false }, evolved: false, advanced: false }
   const texts = new Map<string, string>()
   const clock = mock.clock(on, { now })
   const db = new Map<string, unknown>(Object.entries(store)) // the plugin's store, readable by the test
@@ -83,7 +102,7 @@ const world = (on: On, store: Record<string, unknown> = {}, now = T0) => {
   })
   on('http.fetch', ($, e) => {
     if (state.offline.api) return { value: { status: 503, ok: false, headers: {}, text: '' } }
-    const { status, text } = answer(e.url, state.evolved)
+const { status, text } = answer(e.url, state)
     return { value: { status, ok: status === 200, headers: {}, text } }
   })
   on('process.run', ($, e) => {
@@ -428,6 +447,49 @@ test('with the stage set to all, an evolved species can come', async ($, on) => 
   await start($, clock)
   await clock.advance(3 * HOUR)
   expect(((db.get('pending') ?? []) as Choice[]).some(c => c.kind === 'encounter')).toBe(true)
+})
+
+test('the encounter never goes past the level of the best Pokémon', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([starter]), progress: progressOf([starter], 5) })
+  await start($, clock)
+  await clock.advance(HOUR)
+  const choice = ((db.get('pending') ?? []) as Choice[])[0]
+  expect(choice?.kind === 'encounter' && choice.level).toBe(5)
+})
+
+test('a species too strong for the party never comes', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, state, db } = world(on, { meta: meta(), party: partyOf([starter]), progress: progressOf([starter], 5) })
+  state.advanced = true
+  await start($, clock)
+  await clock.advance(2 * HOUR)
+  expect(((db.get('pending') ?? []) as Choice[]).some(c => c.kind === 'encounter')).toBe(false)
+})
+
+test('a party of level 40 can meet a strong species', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, state, db } = world(on, { meta: meta(), party: partyOf([starter]), progress: progressOf([starter], 40) })
+  state.advanced = true
+  await start($, clock)
+  await clock.advance(HOUR)
+  const choice = ((db.get('pending') ?? []) as Choice[])[0]
+  expect(choice?.kind).toBe('encounter')
+  expect(choice?.kind === 'encounter' && choice.level >= 30 && choice.level <= 33).toBe(true)
+})
+
+test('the level cap can be read and changed, and an unknown one is refused', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([starter]), progress: progressOf([starter], 12) })
+  await start($, clock)
+  expect(await pokemon($, 'levelcap')).toContain('level 12 at most (your best Pokémon)')
+  expect(await pokemon($, 'levelcap 30')).toContain('level 30 at most')
+  expect((db.get('meta') as Meta).levelCap).toBe(30)
+  expect(await pokemon($, 'levelcap party')).toContain('level 12 at most (your best Pokémon)')
+  expect((db.get('meta') as Meta).levelCap).toBe('party')
+  expect(await pokemon($, 'levelcap off')).toContain('any level')
+  expect(await pokemon($, 'levelcap nope')).toContain('I don\'t know "nope"')
+  expect((db.get('meta') as Meta).levelCap).toBe('off')
 })
 
 test('the party card shows the type, the stat bars and the ability', async ($, on) => {
