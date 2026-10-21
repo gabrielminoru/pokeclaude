@@ -1,5 +1,5 @@
-import type { ChainForm, Choice, Member, Path, Progress, Stone, TimeOfDay } from '../types'
-import { BASE_LEVEL, STONES } from './pokeapi'
+import type { ChainForm, Choice, Generation, Member, Meta, Path, Progress, Stone, TimeOfDay } from '../types'
+import { BASE_LEVEL, SPECIES_COUNT, STONES } from './pokeapi'
 
 // Pure game rules: every random pick takes an RNG, every time-dependent rule takes `now`.
 
@@ -83,6 +83,64 @@ export const stoneFor = (salt: string, hour: number, lastStoneHour: number): Sto
   const rng = rngFor(salt, hour, 'stone')
   if (rng() >= 0.5) return null
   return STONES[Math.floor(rng() * STONES.length)] ?? null
+}
+
+// --- Generations: which species the encounters may come from ---
+
+export const DEFAULT_GENERATION: Generation = 1
+
+/** The national dex is contiguous, so each generation owns a range of species ids. */
+const GENERATION_TABLE = [
+  { region: 'kanto', numeral: 'I', lo: 1, hi: 151 },
+  { region: 'johto', numeral: 'II', lo: 152, hi: 251 },
+  { region: 'hoenn', numeral: 'III', lo: 252, hi: 386 },
+  { region: 'sinnoh', numeral: 'IV', lo: 387, hi: 493 },
+  { region: 'unova', numeral: 'V', lo: 494, hi: 649 },
+  { region: 'kalos', numeral: 'VI', lo: 650, hi: 721 },
+  { region: 'alola', numeral: 'VII', lo: 722, hi: 809 },
+  { region: 'galar', numeral: 'VIII', lo: 810, hi: 905 },
+  { region: 'paldea', numeral: 'IX', lo: 906, hi: SPECIES_COUNT },
+]
+
+const entryOf = (generation: number) => GENERATION_TABLE[generation - 1]
+
+export const normalizeGeneration = (generation: Generation): Generation =>
+  generation === 'all' ? 'all' : entryOf(generation) ? generation : DEFAULT_GENERATION
+
+export const generationOf = (meta: Meta | null): Generation =>
+  normalizeGeneration(meta?.generation ?? DEFAULT_GENERATION)
+
+/** The first and last species id a generation covers. */
+export const generationRange = (generation: Generation): readonly [number, number] => {
+  const entry = generation === 'all' ? { lo: 1, hi: SPECIES_COUNT } : entryOf(generation) ?? entryOf(DEFAULT_GENERATION)!
+  return [entry.lo, entry.hi]
+}
+
+export const generationCount = (generation: Generation): number => {
+  const [lo, hi] = generationRange(generation)
+  return hi - lo + 1
+}
+
+/** A species id inside the generation, drawn from the RNG. */
+export const speciesIdFor = (rng: Rng, generation: Generation): number => {
+  const [lo, hi] = generationRange(generation)
+  return lo + Math.floor(rng() * (hi - lo + 1))
+}
+
+export const generationName = (generation: Generation): string => {
+  if (generation === 'all') return 'every generation'
+  const entry = entryOf(generation) ?? entryOf(DEFAULT_GENERATION)!
+  return `Generation ${entry.numeral} (${title(entry.region)})`
+}
+
+/** A generation by number (1–9), by region name or by numeral; null when it names none. */
+export const parseGeneration = (text: string): Generation | null => {
+  const clean = text.trim().toLowerCase()
+  if (clean === 'all') return 'all'
+  const named = GENERATION_TABLE.findIndex(entry => entry.region === clean || entry.numeral.toLowerCase() === clean)
+  if (named >= 0) return named + 1
+  const number = Number(clean)
+  return Number.isInteger(number) && number >= 1 && number <= GENERATION_TABLE.length ? number : null
 }
 
 // --- EXP, mood, friendship ---

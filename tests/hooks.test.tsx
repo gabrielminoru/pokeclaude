@@ -451,3 +451,42 @@ test('/party opens the pane, /party again closes it, and the pane has a Close bu
   expect(open.has('pokemon-party')).toBe(false)
   await ui.unmount()
 })
+
+test('the generation can be read and changed, and an unknown one is refused', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([starter]), progress: progressOf([starter]) })
+  await start($, clock)
+  expect(await pokemon($, 'gen')).toContain('Wild encounters: Generation I (Kanto) · 151 species.')
+  expect(await pokemon($, 'gen 3')).toContain('Wild encounters now come from Generation III (Hoenn) · 135 species.')
+  expect((db.get('meta') as Meta).generation).toBe(3)
+  expect(await pokemon($, 'gen hoenn')).toContain('Generation III (Hoenn)')
+  expect(await pokemon($, 'gen all')).toContain('every generation · 1025 species.')
+  expect((db.get('meta') as Meta).generation).toBe('all')
+  expect(await pokemon($, 'gen 42')).toContain('I don\'t know "42"')
+  expect((db.get('meta') as Meta).generation).toBe('all')
+})
+
+test('the wild encounters come from the generation in play', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([starter]), progress: progressOf([starter]) })
+  await start($, clock)
+  await pokemon($, 'gen 3')
+  await clock.advance(HOUR)
+  const choice = ((db.get('pending') ?? []) as Choice[])[0]
+  expect(choice?.kind).toBe('encounter')
+  expect(choice?.kind === 'encounter' && choice.speciesId >= 252 && choice.speciesId <= 386).toBe(true)
+})
+
+test('the dex counts against the generation in play', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock } = world(on, {
+    meta: meta(), party: partyOf([starter]), progress: progressOf([starter]),
+    dex: { seen: [1, 300, 700], caught: [1, 300], shinies: [] },
+  })
+  await start($, clock)
+  expect(await run($, 'pokedex', '')).toContain('Seen 1/151 · Caught 1/151')
+  await pokemon($, 'gen 3')
+  expect(await run($, 'pokedex', '')).toContain('Seen 1/135 · Caught 1/135')
+  await pokemon($, 'gen all')
+  expect(await run($, 'pokedex', '')).toContain('Seen 3/1025 · Caught 2/1025')
+})

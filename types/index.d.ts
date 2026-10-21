@@ -4,6 +4,9 @@ export type Stone =
 
 export type TimeOfDay = 'day' | 'night' | 'dusk'
 
+/** The generation wild encounters come from, or every generation at once. */
+export type Generation = number | 'all'
+
 /** One way an edge can be satisfied, classified from PokeAPI's evolution_details. */
 export type Condition =
   | { kind: 'level'; level: number; time: TimeOfDay | null }
@@ -50,6 +53,7 @@ export type Meta = {
   lastRollHour: number
   lastStoneHour: number
   lastFriendshipBucket: number
+  generation?: Generation
 }
 
 export type Dex = { seen: number[]; caught: number[]; shinies: number[] }
