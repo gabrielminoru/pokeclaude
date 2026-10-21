@@ -233,6 +233,7 @@ test('a stone evolution: Stop keeps the stone; letting it run evolves and uses i
   const { clock, db } = world(on, { meta: meta(), party: partyOf([vulpix]), progress: progressOf([vulpix]), bag: { stones: { 'fire-stone': 1 }, received: [] } })
   await start($, clock)
   expect(await run($, 'bag', 'use fire 1')).toContain('reacts to the Fire Stone')
+  expect((db.get('bag') as Bag).stones['fire-stone']).toBe(0)
   expect(await pokemon($, 'stop')).toContain('stopped evolving')
   expect((db.get('bag') as Bag).stones['fire-stone']).toBe(1)
   expect((db.get('party') as Party).members[0]?.name).toBe('vulpix')
@@ -241,6 +242,51 @@ test('a stone evolution: Stop keeps the stone; letting it run evolves and uses i
   await clock.advance(16_000)
   expect((db.get('party') as Party).members[0]?.name).toBe('ninetales')
   expect((db.get('bag') as Bag).stones['fire-stone']).toBe(0)
+})
+
+test('one stone can start only one evolution', async ($, on) => {
+  const a = mon('a', 15, 'vulpix')
+  const b = mon('b', 15, 'vulpix')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([a, b]), progress: progressOf([a, b]), bag: { stones: { 'fire-stone': 1 }, received: [] } })
+  await start($, clock)
+  expect(await run($, 'bag', 'use fire-stone 1')).toContain('reacts to the Fire Stone')
+  expect(await run($, 'bag', 'use fire-stone 2')).toContain("You don't have a Fire Stone")
+  await clock.advance(16_000)
+  expect((db.get('party') as Party).members.map(m => m.name)).toEqual(['ninetales', 'vulpix'])
+  expect((db.get('bag') as Bag).stones['fire-stone']).toBe(0)
+})
+
+test('a Pokémon already evolving keeps the second stone in the bag', async ($, on) => {
+  const vulpix = mon('v', 15, 'vulpix')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([vulpix]), progress: progressOf([vulpix]), bag: { stones: { 'fire-stone': 2 }, received: [] } })
+  await start($, clock)
+  await run($, 'bag', 'use fire-stone 1')
+  expect(await run($, 'bag', 'use fire-stone 1')).toContain('already evolving')
+  expect((db.get('bag') as Bag).stones['fire-stone']).toBe(1)
+})
+
+test('releasing a Pokémon mid stone evolution gives the stone back', async ($, on) => {
+  const vulpix = mon('v', 15, 'vulpix')
+  const starter = mon('s', 2, 'charmander')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([vulpix, starter]), progress: progressOf([vulpix, starter]), bag: { stones: { 'fire-stone': 1 }, received: [] } })
+  await start($, clock)
+  await run($, 'bag', 'use fire-stone vulpix')
+  expect(await pokemon($, 'release vulpix')).toContain('was released')
+  expect((db.get('bag') as Bag).stones['fire-stone']).toBe(1)
+  expect(((db.get('pending') ?? []) as Choice[]).some(c => c.kind === 'evolution')).toBe(false)
+})
+
+test('an evolution that is no longer possible gives the stone back and says so', async ($, on) => {
+  const vulpix = mon('v', 15, 'vulpix')
+  const evolving: Choice = {
+    kind: 'evolution', id: 'evo-v', createdAt: T0, memberId: 'v', deadline: T0 + 15_000, stone: 'fire-stone',
+    paths: [{ id: 999, name: 'missingno' }],
+  }
+  const { clock, state, db } = world(on, { meta: meta(), party: partyOf([vulpix]), progress: progressOf([vulpix]), pending: [evolving], bag: { stones: {}, received: [] } })
+  await start($, clock)
+  await clock.advance(60_000)
+  expect((db.get('bag') as Bag).stones['fire-stone']).toBe(1)
+  expect(state.toasts).toContain('That evolution is no longer possible.')
 })
 
 test('a branching evolution nobody chooses counts as Stop', async ($, on) => {
