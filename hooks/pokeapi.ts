@@ -120,6 +120,12 @@ export const parseForm = (raw: { chain: RawNode }, speciesName: string): ChainFo
 
 export const parseTypes = (raw: { types: { type: { name: string } }[] }) => raw.types.map(t => t.type.name)
 
+export type RawSpeciesList = { results: { name: string; url: string }[] }
+
+/** Every species id and name, from the one call that carries them all. */
+export const parseSpeciesList = (raw: RawSpeciesList): Map<number, string> =>
+  new Map(raw.results.map(entry => [idFromUrl(entry.url), entry.name]))
+
 export type RawPokemon = {
   types: { type: { name: string } }[]
   stats: { base_stat: number; stat: { name: string } }[]
