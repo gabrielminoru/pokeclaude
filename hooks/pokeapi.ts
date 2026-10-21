@@ -96,10 +96,12 @@ export type SpeciesInfo = {
   captureRate: number
   legendary: boolean
   chainId: number
+  baseForm: boolean
 }
 
 export type RawSpecies = {
   id: number; name: string; capture_rate: number; is_legendary: boolean; is_mythical: boolean
+  evolves_from_species: { name: string; url: string } | null
   evolution_chain: { url: string }
 }
 
@@ -109,6 +111,7 @@ export const parseSpecies = (raw: RawSpecies): SpeciesInfo => ({
   captureRate: raw.capture_rate,
   legendary: raw.is_legendary || raw.is_mythical,
   chainId: idFromUrl(raw.evolution_chain.url),
+  baseForm: raw.evolves_from_species === null,
 })
 
 /** The species' form with its evolutions resolved from it onward (reach levels counted from the chain's base). */
