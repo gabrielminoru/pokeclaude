@@ -2,8 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Bag, Choice, Dex, Member, Meta, Party, Path, Progress, Stone } from '../types'
-import { SPECIES_COUNT, STONES, parseForm, parseOffset, parseProfile, parseSpecies, parseTypes, spritePath, spriteUrl } from './pokeapi'
-import type { RawNode, RawPokemon, RawSpecies, SpeciesInfo } from './pokeapi'
+import { SPECIES_COUNT, STONES, parseForm, parseOffset, parseProfile, parseSpecies, parseSpeciesList, parseTypes, spritePath, spriteUrl } from './pokeapi'
+import type { RawNode, RawPokemon, RawSpecies, RawSpeciesList, SpeciesInfo } from './pokeapi'
 import {
   ENCOUNTER_ATTEMPTS, MOOD_LABEL, bar, energyOf, EVOLUTION_COUNTDOWN, HOUR, PARTY_SIZE, START_FRIENDSHIP, STARTERS,
   acceptChance, bucketOf, displayName, encounterLevel, findTarget, friendshipStep, gainCall, hourOf, isShiny,
@@ -36,6 +36,12 @@ const fetchJson = async ($: EngineInterface, path: string): Promise<unknown> => 
 
 const speciesInfo = async ($: EngineInterface, idOrName: number | string) =>
   parseSpecies((await fetchJson($, `pokemon-species/${idOrName}`)) as RawSpecies)
+
+/** Every species id and its name, from the one call that carries them all. */
+const speciesNames = async ($: EngineInterface): Promise<Map<number, string>> => {
+  const names = parseSpeciesList((await fetchJson($, `pokemon-species?limit=${SPECIES_COUNT}`)) as RawSpeciesList)
+  return new Map([...names].map(([id, name]) => [id, title(name)]))
+}
 
 const formOf = async ($: EngineInterface, species: SpeciesInfo) =>
   parseForm((await fetchJson($, `evolution-chain/${species.chainId}`)) as { chain: RawNode }, species.name)
@@ -96,6 +102,7 @@ const hiddenAtom = atom({ plugin: 'pokemon', key: 'isHidden' } as const, false)
 const KEYS = Object.keys(DEFAULTS) as (keyof Stored)[]
 const PANE = 'pokemon-party'
 const NAMING_FOR = 10 * 60_000
+const DEX_LIST = 20
 
 const load = async <K extends keyof Stored>($: EngineInterface, key: K): Promise<Stored[K]> =>
   ((await $.store.get(key)) as Stored[K] | undefined) ?? DEFAULTS[key]
@@ -528,6 +535,12 @@ const partyText = (party: Party, progress: Record<string, Progress>) =>
     .map((m, i) => `${i + 1}. ${m.id === party.activeId ? '▶ ' : ''}${displayName(m)} (${title(m.name)} Lv. ${progress[m.id]?.level ?? '?'})`)
     .join('\n')
 
+const dexStatus = async ($: EngineInterface, dex: Dex, id: number): Promise<string> => {
+  const name = await speciesInfo($, id).then(s => title(s.name)).catch(() => `#${id}`)
+  const state = dex.caught.includes(id) ? 'caught' : dex.seen.includes(id) ? 'seen' : 'not seen'
+  return `#${String(id).padStart(3, '0')} ${name} — ${state}`
+}
+
 const HELP = [
   '/pokemon                         active Pokémon stats',
   '/pokemon switch|release <slot|name>, /pokemon nick <slot|name> <nickname>',
@@ -556,7 +569,7 @@ export const register: Register = on => {
     for (const [name, description, argumentHint] of [
       ['pokemon', 'Your active Pokémon, and the choices: keep, letgo, stop, evolve, nick, switch, release', '[keep|letgo|stop|evolve|nick|switch|release|starter|hide|show] …'],
       ['party', 'Open or close your Pokémon party', '[open|close]'],
-      ['pokedex', 'Seen and caught Pokémon, and your shinies', ''],
+      ['pokedex', 'Seen and caught Pokémon, their list, and your shinies', '[seen|caught|<number>]'],
       ['bag', 'Your evolution stones; /bag use <stone> <slot|name>', '[use <stone> <slot|name>]'],
     ] as const) {
       await $.command.register({ name, description, ...(argumentHint ? { argumentHint } : {}) })
@@ -654,14 +667,26 @@ export const register: Register = on => {
     return { text: partyText(await load($, 'party'), await load($, 'progress')) || 'No Pokémon yet.' }
   })
 
-  on('command.run', { command: 'pokedex' }, async $ => {
+  on('command.run', { command: 'pokedex' }, async ($, e) => {
     const dex = await load($, 'dex')
+    const arg = e.args.trim()
+    if (/^\d+$/.test(arg)) return { text: await dexStatus($, dex, Number(arg)) }
+    if (arg === 'seen' || arg === 'caught') {
+      const ids = arg === 'seen' ? dex.seen : dex.caught
+      const label = arg === 'seen' ? 'Seen' : 'Caught'
+      if (ids.length === 0) return { text: `${label}: none yet` }
+      const names = await speciesNames($)
+      const list = [...ids].sort((a, b) => a - b).map(id => names.get(id) ?? `#${id}`)
+      const more = list.length > DEX_LIST ? `, and ${list.length - DEX_LIST} more` : ''
+      return { text: `${label} (${list.length}): ${list.slice(0, DEX_LIST).join(', ')}${more}` }
+    }
     const shinies: string[] = []
     for (const id of dex.shinies) shinies.push(await speciesInfo($, id).then(s => title(s.name)).catch(() => `#${id}`))
     return {
       text: [
         `Seen ${dex.seen.length}/${SPECIES_COUNT} · Caught ${dex.caught.length}/${SPECIES_COUNT}`,
         `Shinies: ${shinies.length ? shinies.join(', ') : 'none yet'}`,
+        'The list: /pokedex seen · /pokedex caught · /pokedex <number>',
       ].join('\n'),
     }
   })

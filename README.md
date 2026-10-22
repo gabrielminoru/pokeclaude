@@ -46,6 +46,7 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 | `/pokemon hide` / `show` | Hide or show the display above the prompt |
 | `/party` | Open the party pane with all six sprites; type it again (or press Close) to close it |
 | `/pokedex` | Seen, caught, shinies |
+| `/pokedex seen` / `caught` / `<number>` | The species you have seen or caught, and one of them by number |
 | `/bag` / `/bag use <stone> <slot\|name>` | Evolution stones |
 
 ## How it plays
@@ -56,6 +57,18 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 - **No harm:** nothing can make your Pokémon faint.
 
 Your party is saved per machine.
+
+## The Pokédex
+
+`/pokedex` counts what you have seen and caught. `/pokedex seen` and `/pokedex caught` list the species themselves, in the order of the Pokédex, and `/pokedex <number>` asks about one of them:
+
+```
+$ /pokedex caught
+Caught (4): Charmander, Gengar, Eevee, Dragonite
+
+$ /pokedex 25
+#025 Pikachu — seen
+```
 
 ## The card
 

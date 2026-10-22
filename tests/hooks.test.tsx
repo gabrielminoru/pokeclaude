@@ -15,9 +15,17 @@ const DATA = `${HOME}/.claude/plugins/data/pokemon`
 
 /** Any species id PokeAPI is asked about: real fixtures where we have them, else a plain single-stage Pokémon. */
 const answer = (url: string): { status: number; text: string } => {
+  const list = /pokemon-species\?limit=(\d+)$/.exec(url)
   const species = /pokemon-species\/(\d+)$/.exec(url)
   const chain = /evolution-chain\/(\d+)$/.exec(url)
   const pokemon = /\/pokemon\/(\d+)$/.exec(url)
+  if (list) {
+    const results = Array.from({ length: Number(list[1]) }, (_, i) => {
+      const id = i + 1
+      return { name: SPECIES[id]?.name ?? `mon-${id}`, url: `https://pokeapi.co/api/v2/pokemon-species/${id}/` }
+    })
+    return { status: 200, text: JSON.stringify({ results }) }
+  }
   if (species) {
     const id = Number(species[1])
     const found = SPECIES[id] ?? {
@@ -341,6 +349,34 @@ test('the party pane lists every member with its buttons', async ($, on) => {
     expect(await ui.find({ key: 'release-a' })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('the dex lists the species you have seen and caught', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, db } = world(on, {
+    meta: meta(), party: partyOf([starter]), progress: progressOf([starter]),
+    dex: { seen: [4, 37], caught: [4], shinies: [] },
+  })
+  await start($, clock)
+  expect(await run($, 'pokedex', '')).toContain('Seen 2/1025 · Caught 1/1025')
+  expect(await run($, 'pokedex', 'seen')).toContain('Seen (2): Charmander, Vulpix')
+  expect(await run($, 'pokedex', 'caught')).toContain('Caught (1): Charmander')
+  expect(await run($, 'pokedex', '37')).toContain('#037 Vulpix — seen')
+  expect(await run($, 'pokedex', '4')).toContain('#004 Charmander — caught')
+  expect(await run($, 'pokedex', '92')).toContain('#092 Gastly — not seen')
+})
+
+test('a long list says how many are left out', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, db } = world(on, {
+    meta: meta(), party: partyOf([starter]), progress: progressOf([starter]),
+    dex: { seen: Array.from({ length: 25 }, (_, i) => i + 1), caught: [], shinies: [] },
+  })
+  await start($, clock)
+  const list = await run($, 'pokedex', 'seen')
+  expect(list).toContain('Seen (25):')
+  expect(list).toContain('and 5 more')
+  expect(await run($, 'pokedex', 'caught')).toBe('Caught: none yet')
 })
 
 test('the party card shows the type, the stat bars and the ability', async ($, on) => {
