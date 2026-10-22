@@ -358,7 +358,7 @@ test('the dex lists the species you have seen and caught', async ($, on) => {
     dex: { seen: [4, 37], caught: [4], shinies: [] },
   })
   await start($, clock)
-  expect(await run($, 'pokedex', '')).toContain('Seen 2/1025 · Caught 1/1025')
+  expect(await run($, 'pokedex', '')).toContain('Seen 2/151 · Caught 1/151')
   expect(await run($, 'pokedex', 'seen')).toContain('Seen (2): Charmander, Vulpix')
   expect(await run($, 'pokedex', 'caught')).toContain('Caught (1): Charmander')
   expect(await run($, 'pokedex', '37')).toContain('#037 Vulpix — seen')
@@ -377,6 +377,25 @@ test('a long list says how many are left out', async ($, on) => {
   expect(list).toContain('Seen (25):')
   expect(list).toContain('and 5 more')
   expect(await run($, 'pokedex', 'caught')).toBe('Caught: none yet')
+})
+
+const boxes = (node: unknown): { type?: string; props?: Record<string, unknown>; children?: unknown[] }[] => {
+  if (!node || typeof node !== 'object') return []
+  const here = node as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  const kids = Array.isArray(here.children) ? here.children : []
+  return [here, ...kids.flatMap(boxes)]
+}
+
+test('the band centers the text against the sprite', async ($, on) => {
+  const a = withProfile(mon('a', 2, 'charmander', 'BLAZE'))
+  const { clock } = world(on, { meta: meta(), party: partyOf([a]), progress: progressOf([a]) })
+  await start($, clock)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'pokemon', surface, ...BAND })
+    const centered = boxes(await ui.drawn()).filter(n => n.type === 'Box' && n.props?.alignSelf === 'center')
+    expect(centered.length).toBe(1)
+    await ui.unmount()
+  }
 })
 
 test('the party card shows the type, the stat bars and the ability', async ($, on) => {
@@ -450,4 +469,43 @@ test('/party opens the pane, /party again closes it, and the pane has a Close bu
   await ui.press({ key: 'close-party' })
   expect(open.has('pokemon-party')).toBe(false)
   await ui.unmount()
+})
+
+test('the generation can be read and changed, and an unknown one is refused', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([starter]), progress: progressOf([starter]) })
+  await start($, clock)
+  expect(await pokemon($, 'gen')).toContain('Wild encounters: Generation I (Kanto) · 151 species.')
+  expect(await pokemon($, 'gen 3')).toContain('Wild encounters now come from Generation III (Hoenn) · 135 species.')
+  expect((db.get('meta') as Meta).generation).toBe(3)
+  expect(await pokemon($, 'gen hoenn')).toContain('Generation III (Hoenn)')
+  expect(await pokemon($, 'gen all')).toContain('every generation · 1025 species.')
+  expect((db.get('meta') as Meta).generation).toBe('all')
+  expect(await pokemon($, 'gen 42')).toContain('I don\'t know "42"')
+  expect((db.get('meta') as Meta).generation).toBe('all')
+})
+
+test('the wild encounters come from the generation in play', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([starter]), progress: progressOf([starter]) })
+  await start($, clock)
+  await pokemon($, 'gen 3')
+  await clock.advance(HOUR)
+  const choice = ((db.get('pending') ?? []) as Choice[])[0]
+  expect(choice?.kind).toBe('encounter')
+  expect(choice?.kind === 'encounter' && choice.speciesId >= 252 && choice.speciesId <= 386).toBe(true)
+})
+
+test('the dex counts against the generation in play', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock } = world(on, {
+    meta: meta(), party: partyOf([starter]), progress: progressOf([starter]),
+    dex: { seen: [1, 300, 700], caught: [1, 300], shinies: [] },
+  })
+  await start($, clock)
+  expect(await run($, 'pokedex', '')).toContain('Seen 1/151 · Caught 1/151')
+  await pokemon($, 'gen 3')
+  expect(await run($, 'pokedex', '')).toContain('Seen 1/135 · Caught 1/135')
+  await pokemon($, 'gen all')
+  expect(await run($, 'pokedex', '')).toContain('Seen 3/1025 · Caught 2/1025')
 })

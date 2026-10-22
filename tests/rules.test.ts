@@ -1,10 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 
-import type { ChainForm, Member, Progress } from '../types'
+import type { ChainForm, Member, Meta, Progress } from '../types'
 import { classify, conditionsFor, fallbackLevel, parseForm, parseOffset } from '../hooks/pokeapi'
 import {
-  HOUR, encounterLevel, findTarget, friendshipStep, gainCall, isShiny, levelUpPaths, moodOf, newProgress, rngFor,
-  sortChoices, stoneFor, stonePaths, stoneTarget, timeMatches,
+  HOUR, encounterLevel, findTarget, friendshipStep, gainCall, generationCount, generationName, generationOf,
+  generationRange, isShiny, levelUpPaths, moodOf, newProgress, parseGeneration, rngFor, sortChoices, speciesIdFor,
+  stoneFor, stonePaths, stoneTarget, timeMatches,
 } from '../hooks/rules'
 import { CHAINS } from './fixtures'
 
@@ -14,6 +15,10 @@ const member = (id: string, chain: ChainForm, nickname: string | null = null): M
 })
 const NOON = 12
 const NIGHT = 22
+
+const meta: Meta = {
+  salt: 'salt', installedAt: 0, utcOffsetMinutes: 0, lastRollHour: 0, lastStoneHour: 0, lastFriendshipBucket: 0,
+}
 
 test('Charmander evolves at the game levels', async () => {
   const charmander = form(2, 'charmander')
@@ -164,4 +169,52 @@ test('pending choices: evolution before starter before encounter before stone', 
     { kind: 'evolution', id: 'e', createdAt: 4, memberId: 'a', paths: [], deadline: 0, stone: null },
   ])
   expect(sorted.map(c => c.kind)).toEqual(['evolution', 'starter', 'stone'])
+})
+
+test('the generations tile the national dex, with no gap and no overlap', async () => {
+  expect(generationRange(1)).toEqual([1, 151])
+  expect(generationRange(2)).toEqual([152, 251])
+  expect(generationRange(9)).toEqual([906, 1025])
+  expect(generationRange('all')).toEqual([1, 1025])
+  expect(generationCount(1)).toBe(151)
+  expect(generationCount('all')).toBe(1025)
+  for (let generation = 2; generation <= 9; generation++) {
+    const [lo, hi] = generationRange(generation)
+    const [previousLo, previousHi] = generationRange(generation - 1)
+    expect(lo).toBe(previousHi + 1)
+    expect(hi - lo + 1).toBe(generationCount(generation))
+  }
+})
+
+test('a generation is named by number or by region, and unknown names are refused', async () => {
+  expect(parseGeneration('3')).toBe(3)
+  expect(parseGeneration('hoenn')).toBe(3)
+  expect(parseGeneration('kanto')).toBe(1)
+  expect(parseGeneration('all')).toBe('all')
+  expect(parseGeneration('  IX ')).toBe(9)
+  expect(parseGeneration('10')).toBe(null)
+  expect(parseGeneration('0')).toBe(null)
+  expect(parseGeneration('kantoo')).toBe(null)
+  expect(parseGeneration('')).toBe(null)
+  expect(generationName(1)).toBe('Generation I (Kanto)')
+  expect(generationName(9)).toBe('Generation IX (Paldea)')
+  expect(generationName('all')).toBe('every generation')
+})
+
+test('the encounters a generation draws always belong to it', async () => {
+  const rng = rngFor('salt', 7, 'species')
+  for (let draw = 0; draw < 500; draw++) {
+    const id = speciesIdFor(rng, 3)
+    expect(id >= 252 && id <= 386).toBe(true)
+  }
+  const every = rngFor('salt', 7, 'species')
+  expect(speciesIdFor(every, 'all')).toBeGreaterThanOrEqual(1)
+  expect(speciesIdFor(every, 'all')).toBeLessThanOrEqual(1025)
+})
+
+test('without a generation in the meta, the encounters come from Kanto', async () => {
+  expect(generationOf(null)).toBe(1)
+  expect(generationOf({ ...meta, generation: 4 })).toBe(4)
+  expect(generationOf({ ...meta, generation: 'all' })).toBe('all')
+  expect(generationOf({ ...meta, generation: 42 })).toBe(1)
 })

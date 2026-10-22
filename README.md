@@ -43,6 +43,7 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 | `/pokemon keep [nickname]` / `letgo` | Answer a wild encounter |
 | `/pokemon stop` / `evolve <species>` | Stop an evolution, or pick a branch |
 | `/pokemon switch \| release \| nick <slot\|name>` | Manage your party (slots 1–6) |
+| `/pokemon gen <1–9\|all>` / `region <name>` | Which generation the wild encounters come from |
 | `/pokemon hide` / `show` | Hide or show the display above the prompt |
 | `/party` | Open the party pane with all six sprites; type it again (or press Close) to close it |
 | `/pokedex` | Seen, caught, shinies |
@@ -57,6 +58,12 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 - **No harm:** nothing can make your Pokémon faint.
 
 Your party is saved per machine.
+
+## Generations
+
+Wild encounters come from **Kanto (Generation I)** by default — the 151 species of the first games. `/pokemon gen` shows the one in play, `/pokemon gen 3` or `/pokemon region hoenn` switches to another, and `/pokemon gen all` brings every species back.
+
+The Pokédex counts against the generation in play, so it can actually be finished: `Seen 12/151 · Caught 4/151` in Kanto, out of the 1025 species of the whole dex.
 
 ## The Pokédex
 

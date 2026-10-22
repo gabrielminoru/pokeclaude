@@ -1,14 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Bag, Choice, Dex, Member, Meta, Party, Path, Progress, Stone } from '../types'
+import type { Bag, Choice, Dex, Generation, Member, Meta, Party, Path, Progress, Stone } from '../types'
 import { SPECIES_COUNT, STONES, parseForm, parseOffset, parseProfile, parseSpecies, parseSpeciesList, parseTypes, spritePath, spriteUrl } from './pokeapi'
 import type { RawNode, RawPokemon, RawSpecies, RawSpeciesList, SpeciesInfo } from './pokeapi'
 import {
-  ENCOUNTER_ATTEMPTS, MOOD_LABEL, bar, energyOf, EVOLUTION_COUNTDOWN, HOUR, PARTY_SIZE, START_FRIENDSHIP, STARTERS,
-  acceptChance, bucketOf, displayName, encounterLevel, findTarget, friendshipStep, gainCall, hourOf, isShiny,
-  levelUpPaths, localHour, moodOf, newProgress, nextEvolutionText, rngFor, sortChoices, stoneFor, stonePaths,
-  stoneTarget, title, typeFactor, upsertChoice, xpToNext,
+  DEFAULT_GENERATION, ENCOUNTER_ATTEMPTS, MOOD_LABEL, bar, energyOf, EVOLUTION_COUNTDOWN, HOUR, PARTY_SIZE,
+  START_FRIENDSHIP, STARTERS, acceptChance, bucketOf, displayName, encounterLevel, findTarget, friendshipStep,
+  gainCall, generationCount, generationName, generationOf, generationRange, hourOf, isShiny, levelUpPaths,
+  localHour, moodOf, newProgress, nextEvolutionText, parseGeneration, rngFor, sortChoices, speciesIdFor,
+  stoneFor, stonePaths, stoneTarget, title, typeFactor, upsertChoice, xpToNext,
 } from './rules'
 import { STAT_ROWS, emptyProfile, statBar, statLine, typeColor } from './cards'
 
@@ -163,6 +164,8 @@ const announce = async ($: EngineInterface, text: string, command?: string) => {
 
 const activeOf = (party: Party) => party.members.find(m => m.id === party.activeId) ?? party.members[0] ?? null
 
+const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+
 const addToDex = (dex: Dex, id: number, shiny: boolean, caught: boolean): Dex => ({
   seen: dex.seen.includes(id) ? dex.seen : [...dex.seen, id],
   caught: !caught || dex.caught.includes(id) ? dex.caught : [...dex.caught, id],
@@ -224,7 +227,7 @@ const generateEncounter = async ($: EngineInterface, meta: Meta, hour: number): 
   const clock = localHour(hour * HOUR, meta.utcOffsetMinutes)
   let picked: SpeciesInfo | null = null
   for (let attempt = 0; attempt < ENCOUNTER_ATTEMPTS; attempt++) {
-    const id = 1 + Math.floor(rng() * SPECIES_COUNT)
+    const id = speciesIdFor(rng, generationOf(meta))
     const roll = rng()
     const species = await speciesInfo($, id)
     picked = species
@@ -541,10 +544,20 @@ const dexStatus = async ($: EngineInterface, dex: Dex, id: number): Promise<stri
   return `#${String(id).padStart(3, '0')} ${name} — ${state}`
 }
 
+const generationLine = (generation: Generation) =>
+  `Wild encounters: ${capitalize(generationName(generation))} · ${generationCount(generation)} species.`
+
+const generationText = (generation: Generation) =>
+  [
+    generationLine(generation),
+    '/pokemon gen <1-9|all> · /pokemon region <kanto|johto|hoenn|sinnoh|unova|kalos|alola|galar|paldea>',
+  ].join('\n')
+
 const HELP = [
   '/pokemon                         active Pokémon stats',
   '/pokemon switch|release <slot|name>, /pokemon nick <slot|name> <nickname>',
   '/pokemon keep [nickname] | letgo | stop | evolve <species> | starter <name>',
+  '/pokemon gen|region <1-9|all>     wild encounters come from one generation',
   '/pokemon hide|show · /party · /pokedex · /bag [use <stone> <slot|name>]',
 ].join('\n')
 
@@ -559,6 +572,7 @@ export const register: Register = on => {
       meta ?? {
         salt: crypto.randomUUID(), installedAt: now, utcOffsetMinutes: 0,
         lastRollHour: hourOf(now), lastStoneHour: hourOf(now), lastFriendshipBucket: bucketOf(now),
+        generation: DEFAULT_GENERATION,
       },
     )
     const offset = await localOffset($).catch(() => null)
@@ -567,7 +581,7 @@ export const register: Register = on => {
     await ensureStarterChoice($, now)
 
     for (const [name, description, argumentHint] of [
-      ['pokemon', 'Your active Pokémon, and the choices: keep, letgo, stop, evolve, nick, switch, release', '[keep|letgo|stop|evolve|nick|switch|release|starter|hide|show] …'],
+      ['pokemon', 'Your active Pokémon, and the choices: keep, letgo, stop, evolve, nick, switch, release, gen', '[keep|letgo|stop|evolve|nick|switch|release|starter|gen|region|hide|show] …'],
       ['party', 'Open or close your Pokémon party', '[open|close]'],
       ['pokedex', 'Seen and caught Pokémon, their list, and your shinies', '[seen|caught|<number>]'],
       ['bag', 'Your evolution stones; /bag use <stone> <slot|name>', '[use <stone> <slot|name>]'],
@@ -618,9 +632,19 @@ export const register: Register = on => {
       case '': {
         const active = activeOf(party)
         if (!active) return { text: `No Pokémon yet: choose a starter. /pokemon starter bulbasaur|charmander|squirtle\n\n${HELP}` }
-        return { text: `${statsText(active, (await load($, 'progress'))[active.id], now)}\n\n${partyText(party, await load($, 'progress'))}\n\n${HELP}` }
+        const generation = generationOf(await load($, 'meta'))
+        return { text: `${generationLine(generation)}\n\n${statsText(active, (await load($, 'progress'))[active.id], now)}\n\n${partyText(party, await load($, 'progress'))}\n\n${HELP}` }
       }
       case 'starter': return { text: await chooseStarter($, arg) }
+      case 'gen':
+      case 'region': {
+        const current = generationOf(await load($, 'meta'))
+        if (!arg.trim()) return { text: generationText(current) }
+        const generation = parseGeneration(arg)
+        if (generation === null) return { text: `I don't know "${arg.trim()}".\n\n${generationText(current)}` }
+        await edit($, 'meta', m => (m ? { ...m, generation } : m))
+        return { text: `Wild encounters now come from ${generationName(generation)} · ${generationCount(generation)} species.` }
+      }
       case 'keep': return { text: await keepEncounter($, arg) }
       case 'letgo': return { text: await letGo($) }
       case 'stop': {
@@ -669,10 +693,14 @@ export const register: Register = on => {
 
   on('command.run', { command: 'pokedex' }, async ($, e) => {
     const dex = await load($, 'dex')
+    const generation = generationOf(await load($, 'meta'))
+    const [lo, hi] = generationRange(generation)
+    const total = generationCount(generation)
+    const inRange = (id: number) => id >= lo && id <= hi
     const arg = e.args.trim()
     if (/^\d+$/.test(arg)) return { text: await dexStatus($, dex, Number(arg)) }
     if (arg === 'seen' || arg === 'caught') {
-      const ids = arg === 'seen' ? dex.seen : dex.caught
+      const ids = (arg === 'seen' ? dex.seen : dex.caught).filter(inRange)
       const label = arg === 'seen' ? 'Seen' : 'Caught'
       if (ids.length === 0) return { text: `${label}: none yet` }
       const names = await speciesNames($)
@@ -681,10 +709,10 @@ export const register: Register = on => {
       return { text: `${label} (${list.length}): ${list.slice(0, DEX_LIST).join(', ')}${more}` }
     }
     const shinies: string[] = []
-    for (const id of dex.shinies) shinies.push(await speciesInfo($, id).then(s => title(s.name)).catch(() => `#${id}`))
+    for (const id of dex.shinies.filter(inRange)) shinies.push(await speciesInfo($, id).then(s => title(s.name)).catch(() => `#${id}`))
     return {
       text: [
-        `Seen ${dex.seen.length}/${SPECIES_COUNT} · Caught ${dex.caught.length}/${SPECIES_COUNT}`,
+        `${capitalize(generationName(generation))} · Seen ${dex.seen.filter(inRange).length}/${total} · Caught ${dex.caught.filter(inRange).length}/${total}`,
         `Shinies: ${shinies.length ? shinies.join(', ') : 'none yet'}`,
         'The list: /pokedex seen · /pokedex caught · /pokedex <number>',
       ].join('\n'),
@@ -794,7 +822,7 @@ export const register: Register = on => {
         ) : (
           <Text>[{title(active.name)}]</Text>
         )}
-        <Box flexDirection="column">
+        <Box flexDirection="column" alignSelf="center">
           {header}
           <Text dimColor>{`Mood ${bar(energyOf(mine, now))}  ${MOOD_LABEL[mood]}`}</Text>
           <Text dimColor>
