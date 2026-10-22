@@ -44,6 +44,7 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 | `/pokemon stop` / `evolve <species>` | Stop an evolution, or pick a branch |
 | `/pokemon switch \| release \| nick <slot\|name>` | Manage your party (slots 1–6) |
 | `/pokemon gen <1–9\|all>` / `region <name>` | Which generation the wild encounters come from |
+| `/pokemon stage <base\|all>` | Which stage of the evolution chain the wild encounters come from |
 | `/pokemon hide` / `show` | Hide or show the display above the prompt |
 | `/party` | Open the party pane with all six sprites; type it again (or press Close) to close it |
 | `/pokedex` | Seen, caught, shinies |
@@ -64,6 +65,12 @@ Your party is saved per machine.
 Wild encounters come from **Kanto (Generation I)** by default — the 151 species of the first games. `/pokemon gen` shows the one in play, `/pokemon gen 3` or `/pokemon region hoenn` switches to another, and `/pokemon gen all` brings every species back.
 
 The Pokédex counts against the generation in play, so it can actually be finished: `Seen 12/151 · Caught 4/151` in Kanto, out of the 1025 species of the whole dex.
+
+## Stages
+
+Wild encounters come from **base forms** by default: a Charmander, never a Charizard. `/pokemon stage` shows the one in play, and `/pokemon stage all` brings every stage of the chain back.
+
+Your own Pokémon still evolves the usual way, so the forms you reach fill the Pokédex like any other species.
 
 ## The Pokédex
 

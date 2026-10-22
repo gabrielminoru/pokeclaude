@@ -1,4 +1,4 @@
-import type { ChainForm, Choice, Generation, Member, Meta, Path, Progress, Stone, TimeOfDay } from '../types'
+import type { ChainForm, Choice, Generation, Member, Meta, Path, Progress, Stage, Stone, TimeOfDay } from '../types'
 import { BASE_LEVEL, SPECIES_COUNT, STONES } from './pokeapi'
 
 // Pure game rules: every random pick takes an RNG, every time-dependent rule takes `now`.
@@ -141,6 +141,22 @@ export const parseGeneration = (text: string): Generation | null => {
   if (named >= 0) return named + 1
   const number = Number(clean)
   return Number.isInteger(number) && number >= 1 && number <= GENERATION_TABLE.length ? number : null
+}
+
+// --- Stages: which step of the evolution chain the encounters may come from ---
+
+export const DEFAULT_STAGE: Stage = 'base'
+
+export const stageOf = (meta: Meta | null): Stage => (meta?.stage === 'all' ? 'all' : DEFAULT_STAGE)
+
+export const stageName = (stage: Stage): string => (stage === 'base' ? 'base forms only' : 'any stage of the chain')
+
+/** A stage by name; null when it names none. */
+export const parseStage = (text: string): Stage | null => {
+  const clean = text.trim().toLowerCase()
+  if (clean === 'base') return 'base'
+  if (clean === 'all') return 'all'
+  return null
 }
 
 // --- EXP, mood, friendship ---

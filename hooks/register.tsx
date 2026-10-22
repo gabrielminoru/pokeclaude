@@ -1,15 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Bag, Choice, Dex, Generation, Member, Meta, Party, Path, Progress, Stone } from '../types'
+import type { Bag, Choice, Dex, Generation, Member, Meta, Party, Path, Progress, Stage, Stone } from '../types'
 import { SPECIES_COUNT, STONES, parseForm, parseOffset, parseProfile, parseSpecies, parseSpeciesList, parseTypes, spritePath, spriteUrl } from './pokeapi'
 import type { RawNode, RawPokemon, RawSpecies, RawSpeciesList, SpeciesInfo } from './pokeapi'
 import {
-  DEFAULT_GENERATION, ENCOUNTER_ATTEMPTS, MOOD_LABEL, bar, energyOf, EVOLUTION_COUNTDOWN, HOUR, PARTY_SIZE,
-  START_FRIENDSHIP, STARTERS, acceptChance, bucketOf, displayName, encounterLevel, findTarget, friendshipStep,
-  gainCall, generationCount, generationName, generationOf, generationRange, hourOf, isShiny, levelUpPaths,
-  localHour, moodOf, newProgress, nextEvolutionText, parseGeneration, rngFor, sortChoices, speciesIdFor,
-  stoneFor, stonePaths, stoneTarget, title, typeFactor, upsertChoice, xpToNext,
+  DEFAULT_GENERATION, DEFAULT_STAGE, ENCOUNTER_ATTEMPTS, MOOD_LABEL, bar, energyOf, EVOLUTION_COUNTDOWN, HOUR,
+  PARTY_SIZE, START_FRIENDSHIP, STARTERS, acceptChance, bucketOf, displayName, encounterLevel, findTarget,
+  friendshipStep, gainCall, generationCount, generationName, generationOf, generationRange, hourOf, isShiny,
+  levelUpPaths, localHour, moodOf, newProgress, nextEvolutionText, parseGeneration, parseStage, rngFor, sortChoices,
+  speciesIdFor, stageName, stageOf, stoneFor, stonePaths, stoneTarget, title, typeFactor, upsertChoice, xpToNext,
 } from './rules'
 import { STAT_ROWS, emptyProfile, statBar, statLine, typeColor } from './cards'
 
@@ -225,11 +225,13 @@ const chooseStarter = async ($: EngineInterface, name: string): Promise<string> 
 const generateEncounter = async ($: EngineInterface, meta: Meta, hour: number): Promise<Choice> => {
   const rng = rngFor(meta.salt, hour, 'species')
   const clock = localHour(hour * HOUR, meta.utcOffsetMinutes)
+  const stage = stageOf(meta)
   let picked: SpeciesInfo | null = null
   for (let attempt = 0; attempt < ENCOUNTER_ATTEMPTS; attempt++) {
-    const id = speciesIdFor(rng, generationOf(meta))
-    const roll = rng()
+const id = speciesIdFor(rng, generationOf(meta))
     const species = await speciesInfo($, id)
+    if (stage === 'base' && !species.baseForm) continue
+    const roll = rng()
     picked = species
     const factor = typeFactor(await typesOf($, id), clock)
     if (roll < acceptChance(species.captureRate, species.legendary, factor)) break
@@ -553,11 +555,20 @@ const generationText = (generation: Generation) =>
     '/pokemon gen <1-9|all> · /pokemon region <kanto|johto|hoenn|sinnoh|unova|kalos|alola|galar|paldea>',
   ].join('\n')
 
+const stageLine = (stage: Stage) => `Wild encounters: ${stageName(stage)}.`
+
+const stageText = (stage: Stage) =>
+  [
+    stageLine(stage),
+    '/pokemon stage <base|all>',
+  ].join('\n')
+
 const HELP = [
   '/pokemon                         active Pokémon stats',
   '/pokemon switch|release <slot|name>, /pokemon nick <slot|name> <nickname>',
   '/pokemon keep [nickname] | letgo | stop | evolve <species> | starter <name>',
   '/pokemon gen|region <1-9|all>     wild encounters come from one generation',
+  '/pokemon stage <base|all>         wild encounters come from one stage of the chain',
   '/pokemon hide|show · /party · /pokedex · /bag [use <stone> <slot|name>]',
 ].join('\n')
 
@@ -572,7 +583,8 @@ export const register: Register = on => {
       meta ?? {
         salt: crypto.randomUUID(), installedAt: now, utcOffsetMinutes: 0,
         lastRollHour: hourOf(now), lastStoneHour: hourOf(now), lastFriendshipBucket: bucketOf(now),
-        generation: DEFAULT_GENERATION,
+generation: DEFAULT_GENERATION,
+        stage: DEFAULT_STAGE,
       },
     )
     const offset = await localOffset($).catch(() => null)
@@ -581,7 +593,7 @@ export const register: Register = on => {
     await ensureStarterChoice($, now)
 
     for (const [name, description, argumentHint] of [
-      ['pokemon', 'Your active Pokémon, and the choices: keep, letgo, stop, evolve, nick, switch, release, gen', '[keep|letgo|stop|evolve|nick|switch|release|starter|gen|region|hide|show] …'],
+['pokemon', 'Your active Pokémon, and the choices: keep, letgo, stop, evolve, nick, switch, release, gen, stage', '[keep|letgo|stop|evolve|nick|switch|release|starter|gen|region|stage|hide|show] …'],
       ['party', 'Open or close your Pokémon party', '[open|close]'],
       ['pokedex', 'Seen and caught Pokémon, their list, and your shinies', '[seen|caught|<number>]'],
       ['bag', 'Your evolution stones; /bag use <stone> <slot|name>', '[use <stone> <slot|name>]'],
@@ -636,7 +648,7 @@ export const register: Register = on => {
         return { text: `${generationLine(generation)}\n\n${statsText(active, (await load($, 'progress'))[active.id], now)}\n\n${partyText(party, await load($, 'progress'))}\n\n${HELP}` }
       }
       case 'starter': return { text: await chooseStarter($, arg) }
-      case 'gen':
+case 'gen':
       case 'region': {
         const current = generationOf(await load($, 'meta'))
         if (!arg.trim()) return { text: generationText(current) }
@@ -644,6 +656,14 @@ export const register: Register = on => {
         if (generation === null) return { text: `I don't know "${arg.trim()}".\n\n${generationText(current)}` }
         await edit($, 'meta', m => (m ? { ...m, generation } : m))
         return { text: `Wild encounters now come from ${generationName(generation)} · ${generationCount(generation)} species.` }
+      }
+      case 'stage': {
+        const current = stageOf(await load($, 'meta'))
+        if (!arg.trim()) return { text: stageText(current) }
+        const stage = parseStage(arg)
+        if (stage === null) return { text: `I don't know "${arg.trim()}".\n\n${stageText(current)}` }
+        await edit($, 'meta', m => (m ? { ...m, stage } : m))
+        return { text: `Wild encounters now come from ${stageName(stage)}.` }
       }
       case 'keep': return { text: await keepEncounter($, arg) }
       case 'letgo': return { text: await letGo($) }

@@ -14,7 +14,7 @@ const HOME = '/Users/trainer'
 const DATA = `${HOME}/.claude/plugins/data/pokemon`
 
 /** Any species id PokeAPI is asked about: real fixtures where we have them, else a plain single-stage Pokémon. */
-const answer = (url: string): { status: number; text: string } => {
+const answer = (url: string, evolved = false): { status: number; text: string } => {
   const list = /pokemon-species\?limit=(\d+)$/.exec(url)
   const species = /pokemon-species\/(\d+)$/.exec(url)
   const chain = /evolution-chain\/(\d+)$/.exec(url)
@@ -29,10 +29,11 @@ const answer = (url: string): { status: number; text: string } => {
   if (species) {
     const id = Number(species[1])
     const found = SPECIES[id] ?? {
-      id, name: `mon-${id}`, capture_rate: 255, is_legendary: false, is_mythical: false,
+      id, name: `mon-${id}`, capture_rate: 255, is_legendary: false, is_mythical: false, evolves_from_species: null,
       evolution_chain: { url: `https://pokeapi.co/api/v2/evolution-chain/${100_000 + id}/` },
     }
-    return { status: 200, text: JSON.stringify(found) }
+    const from = { name: 'predecessor', url: 'https://pokeapi.co/api/v2/pokemon-species/1/' }
+    return { status: 200, text: JSON.stringify(evolved ? { ...found, evolves_from_species: from } : found) }
   }
   if (chain) {
     const id = Number(chain[1])
@@ -49,10 +50,10 @@ const answer = (url: string): { status: number; text: string } => {
   return { status: 404, text: '{}' }
 }
 
-type World = { toasts: string[]; files: Set<string>; offline: { sprites: boolean; api: boolean } }
+type World = { toasts: string[]; files: Set<string>; offline: { sprites: boolean; api: boolean }; evolved: boolean }
 
 const world = (on: On, store: Record<string, unknown> = {}, now = T0) => {
-  const state: World = { toasts: [], files: new Set(), offline: { sprites: false, api: false } }
+  const state: World = { toasts: [], files: new Set(), offline: { sprites: false, api: false }, evolved: false }
   const texts = new Map<string, string>()
   const clock = mock.clock(on, { now })
   const db = new Map<string, unknown>(Object.entries(store)) // the plugin's store, readable by the test
@@ -82,7 +83,7 @@ const world = (on: On, store: Record<string, unknown> = {}, now = T0) => {
   })
   on('http.fetch', ($, e) => {
     if (state.offline.api) return { value: { status: 503, ok: false, headers: {}, text: '' } }
-    const { status, text } = answer(e.url)
+    const { status, text } = answer(e.url, state.evolved)
     return { value: { status, ok: status === 200, headers: {}, text } }
   })
   on('process.run', ($, e) => {
@@ -396,6 +397,37 @@ test('the band centers the text against the sprite', async ($, on) => {
     expect(centered.length).toBe(1)
     await ui.unmount()
   }
+})
+
+test('the stage can be read and changed, and an unknown one is refused', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([starter]), progress: progressOf([starter]) })
+  await start($, clock)
+  expect(await pokemon($, 'stage')).toContain('Wild encounters: base forms only.')
+  expect(await pokemon($, 'stage all')).toContain('Wild encounters now come from any stage of the chain.')
+  expect((db.get('meta') as Meta).stage).toBe('all')
+  expect(await pokemon($, 'stage evolved')).toContain('I don\'t know "evolved"')
+  expect((db.get('meta') as Meta).stage).toBe('all')
+  expect(await pokemon($, 'stage base')).toContain('Wild encounters now come from base forms only.')
+  expect((db.get('meta') as Meta).stage).toBe('base')
+})
+
+test('with base forms only, an evolved species never comes', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, state, db } = world(on, { meta: meta(), party: partyOf([starter]), progress: progressOf([starter]) })
+  state.evolved = true
+  await start($, clock)
+  await clock.advance(3 * HOUR)
+  expect(((db.get('pending') ?? []) as Choice[]).some(c => c.kind === 'encounter')).toBe(false)
+})
+
+test('with the stage set to all, an evolved species can come', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, state, db } = world(on, { meta: meta({ stage: 'all' }), party: partyOf([starter]), progress: progressOf([starter]) })
+  state.evolved = true
+  await start($, clock)
+  await clock.advance(3 * HOUR)
+  expect(((db.get('pending') ?? []) as Choice[]).some(c => c.kind === 'encounter')).toBe(true)
 })
 
 test('the party card shows the type, the stat bars and the ability', async ($, on) => {

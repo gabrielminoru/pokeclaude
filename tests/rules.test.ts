@@ -4,8 +4,8 @@ import type { ChainForm, Member, Meta, Progress } from '../types'
 import { classify, conditionsFor, fallbackLevel, parseForm, parseOffset } from '../hooks/pokeapi'
 import {
   HOUR, encounterLevel, findTarget, friendshipStep, gainCall, generationCount, generationName, generationOf,
-  generationRange, isShiny, levelUpPaths, moodOf, newProgress, parseGeneration, rngFor, sortChoices, speciesIdFor,
-  stoneFor, stonePaths, stoneTarget, timeMatches,
+  generationRange, isShiny, levelUpPaths, moodOf, newProgress, parseGeneration, parseStage, rngFor, sortChoices,
+  speciesIdFor, stageOf, stoneFor, stonePaths, stoneTarget, timeMatches,
 } from '../hooks/rules'
 import { CHAINS } from './fixtures'
 
@@ -217,4 +217,14 @@ test('without a generation in the meta, the encounters come from Kanto', async (
   expect(generationOf({ ...meta, generation: 4 })).toBe(4)
   expect(generationOf({ ...meta, generation: 'all' })).toBe('all')
   expect(generationOf({ ...meta, generation: 42 })).toBe(1)
+})
+
+test('stages: base forms only by default, and only base and all are known', async () => {
+  expect(stageOf(null)).toBe('base')
+  expect(stageOf({ stage: 'all' } as Meta)).toBe('all')
+  expect(stageOf({ stage: 'base' } as Meta)).toBe('base')
+  expect(stageOf({ stage: 'nonsense' } as Meta)).toBe('base')
+  expect(parseStage('base')).toBe('base')
+  expect(parseStage('ALL')).toBe('all')
+  expect(parseStage('evolved')).toBe(null)
 })
