@@ -1,15 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Bag, Choice, Dex, Generation, Member, Meta, Party, Path, Progress, Stage, Stone } from '../types'
+import type { Bag, Choice, Dex, Generation, LevelCap, Member, Meta, Party, Path, Progress, Stage, Stone } from '../types'
 import { SPECIES_COUNT, STONES, parseForm, parseOffset, parseProfile, parseSpecies, parseSpeciesList, parseTypes, spritePath, spriteUrl } from './pokeapi'
 import type { RawNode, RawPokemon, RawSpecies, RawSpeciesList, SpeciesInfo } from './pokeapi'
 import {
-  DEFAULT_GENERATION, DEFAULT_STAGE, ENCOUNTER_ATTEMPTS, MOOD_LABEL, bar, energyOf, EVOLUTION_COUNTDOWN, HOUR,
-  PARTY_SIZE, START_FRIENDSHIP, STARTERS, acceptChance, bucketOf, displayName, encounterLevel, findTarget,
-  friendshipStep, gainCall, generationCount, generationName, generationOf, generationRange, hourOf, isShiny,
-  levelUpPaths, localHour, moodOf, newProgress, nextEvolutionText, parseGeneration, parseStage, rngFor, sortChoices,
-  speciesIdFor, stageName, stageOf, stoneFor, stonePaths, stoneTarget, title, typeFactor, upsertChoice, xpToNext,
+  DEFAULT_GENERATION, DEFAULT_LEVEL_CAP, DEFAULT_STAGE, ENCOUNTER_ATTEMPTS, MOOD_LABEL, bar, energyOf,
+  EVOLUTION_COUNTDOWN, HOUR, PARTY_SIZE, START_FRIENDSHIP, STARTERS, acceptChance, bucketOf, displayName,
+  encounterLevel, findTarget, friendshipStep, gainCall, generationCount, generationName, generationOf,
+  generationRange, hourOf, isShiny, levelCapName, levelCapOf, levelCapValue, levelUpPaths, localHour, moodOf,
+  newProgress, nextEvolutionText, parseGeneration, parseLevelCap, parseStage, rngFor, sortChoices, speciesIdFor,
+  stageName, stageOf, stoneFor, stonePaths, stoneTarget, title, typeFactor, upsertChoice, xpToNext,
 } from './rules'
 import { STAT_ROWS, emptyProfile, statBar, statLine, typeColor } from './cards'
 
@@ -222,15 +223,16 @@ const chooseStarter = async ($: EngineInterface, name: string): Promise<string> 
 
 // --- Encounters and stones (deterministic per hour: two sessions compute the same thing) ---
 
-const generateEncounter = async ($: EngineInterface, meta: Meta, hour: number): Promise<Choice> => {
+const generateEncounter = async ($: EngineInterface, meta: Meta, hour: number, cap: number): Promise<Choice> => {
   const rng = rngFor(meta.salt, hour, 'species')
   const clock = localHour(hour * HOUR, meta.utcOffsetMinutes)
   const stage = stageOf(meta)
   let picked: SpeciesInfo | null = null
   for (let attempt = 0; attempt < ENCOUNTER_ATTEMPTS; attempt++) {
-const id = speciesIdFor(rng, generationOf(meta))
+    const id = speciesIdFor(rng, generationOf(meta))
     const species = await speciesInfo($, id)
     if (stage === 'base' && !species.baseForm) continue
+    if (cap !== Infinity && (await formOf($, species)).reachLevel > cap) continue
     const roll = rng()
     picked = species
     const factor = typeFactor(await typesOf($, id), clock)
@@ -239,12 +241,19 @@ const id = speciesIdFor(rng, generationOf(meta))
   if (!picked) throw new Error('no species')
   const chain = await formOf($, picked)
   const shiny = isShiny(rngFor(meta.salt, hour, 'shiny'))
-  const level = encounterLevel(chain.reachLevel, rngFor(meta.salt, hour, 'level'))
+  const level = encounterLevel(chain.reachLevel, rngFor(meta.salt, hour, 'level'), cap)
   if (!(await ensureSprite($, picked.id, shiny))) throw new Error('sprite download failed')
   return {
     kind: 'encounter', id: `enc-${hour}`, createdAt: hour * HOUR, hour,
     speciesId: picked.id, name: picked.name, shiny, level, legendary: picked.legendary, chain,
   }
+}
+
+/** The level of every member of the party, as the progress knows it. */
+const partyLevels = async ($: EngineInterface): Promise<number[]> => {
+  const party = await load($, 'party')
+  const progress = await load($, 'progress')
+  return party.members.map(m => progress[m.id]?.level ?? 0)
 }
 
 const rollEncounter = async ($: EngineInterface, now: number) => {
@@ -254,7 +263,8 @@ const rollEncounter = async ($: EngineInterface, now: number) => {
   const party = await load($, 'party')
   if (party.members.length === 0 || party.members.length >= PARTY_SIZE) return
 
-  const encounter = await generateEncounter($, meta, hour) // throws on PokeAPI/sprite failure: the next tick retries
+  const cap = levelCapValue(levelCapOf(meta), await partyLevels($))
+  const encounter = await generateEncounter($, meta, hour, cap) // throws on PokeAPI/sprite failure: the next tick retries
   if (encounter.kind !== 'encounter') return
   const fresh = await load($, 'meta')
   if (!fresh || fresh.lastRollHour >= hour) return // another session published it meanwhile
@@ -567,8 +577,9 @@ const HELP = [
   '/pokemon                         active Pokémon stats',
   '/pokemon switch|release <slot|name>, /pokemon nick <slot|name> <nickname>',
   '/pokemon keep [nickname] | letgo | stop | evolve <species> | starter <name>',
-  '/pokemon gen|region <1-9|all>     wild encounters come from one generation',
+'/pokemon gen|region <1-9|all>     wild encounters come from one generation',
   '/pokemon stage <base|all>         wild encounters come from one stage of the chain',
+  '/pokemon levelcap <party|off|n>   wild encounters never go past a level',
   '/pokemon hide|show · /party · /pokedex · /bag [use <stone> <slot|name>]',
 ].join('\n')
 
@@ -585,6 +596,7 @@ export const register: Register = on => {
         lastRollHour: hourOf(now), lastStoneHour: hourOf(now), lastFriendshipBucket: bucketOf(now),
 generation: DEFAULT_GENERATION,
         stage: DEFAULT_STAGE,
+        levelCap: DEFAULT_LEVEL_CAP,
       },
     )
     const offset = await localOffset($).catch(() => null)
@@ -593,7 +605,7 @@ generation: DEFAULT_GENERATION,
     await ensureStarterChoice($, now)
 
     for (const [name, description, argumentHint] of [
-['pokemon', 'Your active Pokémon, and the choices: keep, letgo, stop, evolve, nick, switch, release, gen, stage', '[keep|letgo|stop|evolve|nick|switch|release|starter|gen|region|stage|hide|show] …'],
+['pokemon', 'Your active Pokémon, and the choices: keep, letgo, stop, evolve, nick, switch, release, gen, stage, levelcap', '[keep|letgo|stop|evolve|nick|switch|release|starter|gen|region|stage|levelcap|hide|show] …'],
       ['party', 'Open or close your Pokémon party', '[open|close]'],
       ['pokedex', 'Seen and caught Pokémon, their list, and your shinies', '[seen|caught|<number>]'],
       ['bag', 'Your evolution stones; /bag use <stone> <slot|name>', '[use <stone> <slot|name>]'],
@@ -664,6 +676,16 @@ case 'gen':
         if (stage === null) return { text: `I don't know "${arg.trim()}".\n\n${stageText(current)}` }
         await edit($, 'meta', m => (m ? { ...m, stage } : m))
         return { text: `Wild encounters now come from ${stageName(stage)}.` }
+      }
+      case 'levelcap': {
+        const levels = await partyLevels($)
+        const current = levelCapOf(await load($, 'meta'))
+        const line = `Wild encounters: ${levelCapName(current, levelCapValue(current, levels))}.`
+        if (!arg.trim()) return { text: line }
+        const cap = parseLevelCap(arg)
+        if (cap === null) return { text: `I don't know "${arg.trim()}".\n\n${line}` }
+        await edit($, 'meta', m => (m ? { ...m, levelCap: cap } : m))
+        return { text: `Wild encounters now come at ${levelCapName(cap, levelCapValue(cap, levels))}.` }
       }
       case 'keep': return { text: await keepEncounter($, arg) }
       case 'letgo': return { text: await letGo($) }

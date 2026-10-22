@@ -1,4 +1,4 @@
-import type { ChainForm, Choice, Generation, Member, Meta, Path, Progress, Stage, Stone, TimeOfDay } from '../types'
+import type { ChainForm, Choice, Generation, LevelCap, Member, Meta, Path, Progress, Stage, Stone, TimeOfDay } from '../types'
 import { BASE_LEVEL, SPECIES_COUNT, STONES } from './pokeapi'
 
 // Pure game rules: every random pick takes an RNG, every time-dependent rule takes `now`.
@@ -73,7 +73,8 @@ export const typeFactor = (types: string[], hour: number) => {
 export const acceptChance = (captureRate: number, legendary: boolean, factor: number) =>
   (captureRate / 255) * (factor / MAX_TYPE_FACTOR) * (legendary ? 0.1 : 1)
 
-export const encounterLevel = (reachLevel: number, rng: Rng) => Math.max(BASE_LEVEL, reachLevel) + Math.floor(rng() * 4)
+export const encounterLevel = (reachLevel: number, rng: Rng, cap = Infinity) =>
+  Math.min(Math.max(BASE_LEVEL, reachLevel) + Math.floor(rng() * 4), cap)
 
 export const isShiny = (rng: Rng) => rng() < SHINY_ODDS
 
@@ -157,6 +158,34 @@ export const parseStage = (text: string): Stage | null => {
   if (clean === 'base') return 'base'
   if (clean === 'all') return 'all'
   return null
+}
+
+// --- Level caps: how strong a wild encounter may be ---
+
+export const DEFAULT_LEVEL_CAP: LevelCap = 'party'
+
+export const levelCapOf = (meta: Meta | null): LevelCap => meta?.levelCap ?? DEFAULT_LEVEL_CAP
+
+/** A cap by name or by level; null when it names none. */
+export const parseLevelCap = (text: string): LevelCap | null => {
+  const clean = text.trim().toLowerCase()
+  if (clean === 'off') return 'off'
+  if (clean === 'party') return 'party'
+  const number = Number(clean)
+  return Number.isInteger(number) && number > 0 ? number : null
+}
+
+/** The level an encounter may not go past: the party's best, a fixed one, or none at all. */
+export const levelCapValue = (cap: LevelCap, levels: number[]): number => {
+  if (cap === 'off') return Infinity
+  if (cap === 'party') return levels.length ? Math.max(BASE_LEVEL, ...levels) : BASE_LEVEL
+  return Math.max(BASE_LEVEL, cap)
+}
+
+export const levelCapName = (cap: LevelCap, value: number): string => {
+  if (cap === 'off') return 'any level'
+  if (cap === 'party') return `level ${value} at most (your best Pokémon)`
+  return `level ${value} at most`
 }
 
 // --- EXP, mood, friendship ---

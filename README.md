@@ -45,6 +45,7 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 | `/pokemon switch \| release \| nick <slot\|name>` | Manage your party (slots 1–6) |
 | `/pokemon gen <1–9\|all>` / `region <name>` | Which generation the wild encounters come from |
 | `/pokemon stage <base\|all>` | Which stage of the evolution chain the wild encounters come from |
+| `/pokemon levelcap <party\|off\|n>` | How strong a wild encounter may be |
 | `/pokemon hide` / `show` | Hide or show the display above the prompt |
 | `/party` | Open the party pane with all six sprites; type it again (or press Close) to close it |
 | `/pokedex` | Seen, caught, shinies |
@@ -71,6 +72,14 @@ The Pokédex counts against the generation in play, so it can actually be finish
 Wild encounters come from **base forms** by default: a Charmander, never a Charizard. `/pokemon stage` shows the one in play, and `/pokemon stage all` brings every stage of the chain back.
 
 Your own Pokémon still evolves the usual way, so the forms you reach fill the Pokédex like any other species.
+
+## Level caps
+
+A wild encounter never goes past the level of your best Pokémon: a party at level 5 meets a level 5 Pokémon, not a Dusclops at level 40.
+
+A species that is too strong for the party does not come at all — a form only reached at level 36 waits for a party that is close to it.
+
+`/pokemon levelcap` shows the ceiling in play, `/pokemon levelcap 25` sets a fixed one, and `/pokemon levelcap off` lifts it.
 
 ## The Pokédex
 

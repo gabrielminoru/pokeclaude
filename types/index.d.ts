@@ -10,6 +10,9 @@ export type Generation = number | 'all'
 /** The stage of the evolution chain the wild encounters come from. */
 export type Stage = 'base' | 'all'
 
+/** How strong a wild encounter may be: the party's best, a fixed level, or anything. */
+export type LevelCap = number | 'party' | 'off'
+
 /** One way an edge can be satisfied, classified from PokeAPI's evolution_details. */
 export type Condition =
   | { kind: 'level'; level: number; time: TimeOfDay | null }
@@ -58,6 +61,7 @@ export type Meta = {
   lastFriendshipBucket: number
 generation?: Generation
   stage?: Stage
+  levelCap?: LevelCap
 }
 
 export type Dex = { seen: number[]; caught: number[]; shinies: number[] }
