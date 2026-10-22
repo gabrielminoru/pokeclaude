@@ -307,11 +307,15 @@ const finishEvolution = async ($: EngineInterface, choiceId: string, path: Path)
   const edge = member?.chain.edges.find(e => e.to.id === path.id)
   if (!member || !edge) {
     await edit($, 'pending', removeChoice(choiceId))
-    return 'That evolution is no longer possible.'
+    const text = 'That evolution is no longer possible.'
+    $.ui.toast(text)
+    return text
   }
   if (choice.stone && !((await load($, 'bag')).stones[choice.stone] ?? 0)) {
     await edit($, 'pending', removeChoice(choiceId))
-    return `You no longer have a ${title(choice.stone)}.`
+    const text = `You no longer have a ${title(choice.stone)}.`
+    $.ui.toast(text)
+    return text
   }
   // Claim the choice first, so a second settle (another session, the tick) does nothing.
   let claimed = false
@@ -454,7 +458,10 @@ const letGo = async ($: EngineInterface): Promise<string> => {
 }
 
 const useStone = async ($: EngineInterface, stone: Stone, member: Member): Promise<string> => {
-  if (!((await load($, 'bag')).stones[stone] ?? 0)) return `You don't have a ${title(stone)}.`
+  const count = (await load($, 'bag')).stones[stone] ?? 0
+  if (count <= 0) return `You don't have a ${title(stone)}.`
+  const reserved = (await load($, 'pending')).filter(c => c.kind === 'evolution' && c.stone === stone).length
+  if (reserved >= count) return `The ${title(stone)} is already in use.`
   const paths = stonePaths(member.chain, stone)
   if (paths.length === 0) return `It won't have any effect on ${displayName(member)}.`
   await edit($, 'pending', p => p.filter(c => !(c.kind === 'stone' && c.stone === stone && c.memberId === member.id)))
