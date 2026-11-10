@@ -6,6 +6,7 @@ import type { Bag, Choice, Member, Meta, Party, Progress } from '../types'
 import { parseForm } from '../hooks/pokeapi'
 import { HOUR, newProgress, stoneFor } from '../hooks/rules'
 import { CHAINS, POKEMON, SPECIES } from './fixtures'
+import { dynamicPng } from './png'
 
 // 15:00 UTC = noon at -0300: daytime.
 const T0 = Date.UTC(2026, 9, 7, 15, 0, 0)
@@ -71,7 +72,7 @@ const answer = (url: string, world: { evolved: boolean; advanced: boolean }): { 
 
 type World = { toasts: string[]; files: Set<string>; offline: { sprites: boolean; api: boolean }; evolved: boolean; advanced: boolean }
 
-const world = (on: On, store: Record<string, unknown> = {}, now = T0) => {
+const world = (on: On, store: Record<string, unknown> = {}, now = T0, env: Record<string, string> = {}) => {
   const state: World = { toasts: [], files: new Set(), offline: { sprites: false, api: false }, evolved: false, advanced: false }
   const texts = new Map<string, string>()
   const clock = mock.clock(on, { now })
@@ -86,7 +87,7 @@ const world = (on: On, store: Record<string, unknown> = {}, now = T0) => {
     return { value: undefined }
   })
   on('store.keys', () => ({ value: [...db.keys()] }))
-  mock.env(on, { HOME })
+  mock.env(on, { HOME, ...env })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.toast', ($, e) => {
@@ -108,6 +109,7 @@ const { status, text } = answer(e.url, state)
   on('process.run', ($, e) => {
     const ran = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     if (e.argv[0] === 'date') return ran(0, '-0300\n')
+    if (e.argv[0] === 'base64') return ran(0, dynamicPng.png)
     if (e.argv[0] === 'curl') {
       if (state.offline.sprites) return ran(22)
       state.files.add(e.argv[e.argv.indexOf('-o') + 1] ?? '')
@@ -336,7 +338,7 @@ const BAND = {
 } as const
 
 test('the band offers the starters, then shows the active Pokémon and a pending encounter, on every surface', async ($, on) => {
-  const { clock, db } = world(on)
+  const { clock, db } = world(on, {}, T0, { TERM_PROGRAM: 'ghostty' })
   await start($, clock)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'pokemon', surface, ...BAND })
@@ -602,4 +604,43 @@ test('the dex counts against the generation in play', async ($, on) => {
   expect(await run($, 'pokedex', '')).toContain('Seen 1/135 · Caught 1/135')
   await pokemon($, 'gen all')
   expect(await run($, 'pokedex', '')).toContain('Seen 3/1025 · Caught 2/1025')
+})
+
+const spriteBand = async ($: Dollar, on: On, env: Record<string, string>, surface: 'terminal' | 'desktop' = 'terminal') => {
+  const { clock } = world(on, {}, T0, env)
+  await start($, clock)
+  await pokemon($, 'starter charmander')
+  return $.ui.mount({ plugin: 'pokemon', surface, ...BAND })
+}
+
+test('a terminal that draws no images gets the sprite as pixel art', async ($, on) => {
+  const ui = await spriteBand($, on, { TERM_PROGRAM: 'JetBrains-JediTerm' })
+  const raster = await ui.find({ type: 'Raster' })
+  expect(raster).toBeDefined()
+  expect(await ui.find({ type: 'Image' })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: '[Charmander]' })).toBeFalsy()
+  await ui.unmount()
+})
+
+for (const [choice, terminal] of [['image', 'JetBrains-JediTerm'], ['pixel', 'ghostty'], ['text', 'ghostty']] as const) {
+  test(`POKEMON_SPRITE=${choice} beats what the terminal would get`, async ($, on) => {
+    const ui = await spriteBand($, on, { TERM_PROGRAM: terminal, POKEMON_SPRITE: choice })
+    if (choice === 'text') expect(await ui.find({ type: 'Text', text: '[Charmander]' })).toBeDefined()
+    else expect(await ui.find({ type: choice === 'image' ? 'Image' : 'Raster' })).toBeDefined()
+    await ui.unmount()
+  })
+}
+
+test('the desktop app keeps the text badge: it has no terminal cells to draw', async ($, on) => {
+  const ui = await spriteBand($, on, { TERM_PROGRAM: 'JetBrains-JediTerm' }, 'desktop')
+  expect(await ui.find({ type: 'Text', text: '[Charmander]' })).toBeDefined()
+  expect(await ui.find({ type: 'Raster' })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('POKEMON_PIXEL_ROWS sizes the pixel art', async ($, on) => {
+  const ui = await spriteBand($, on, { TERM_PROGRAM: 'JetBrains-JediTerm', POKEMON_PIXEL_ROWS: '7' })
+  const raster = (await ui.find({ type: 'Raster' })) as { props: { columns: number; rows: number } }
+  expect([raster.props.columns, raster.props.rows]).toEqual([14, 7])
+  await ui.unmount()
 })

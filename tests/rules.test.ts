@@ -5,7 +5,7 @@ import { classify, conditionsFor, fallbackLevel, parseForm, parseOffset } from '
 import {
   HOUR, encounterLevel, findTarget, friendshipStep, gainCall, generationCount, generationName, generationOf,
   generationRange, isShiny, levelCapOf, levelCapValue, levelUpPaths, moodOf, newProgress, parseGeneration,
-  parseLevelCap, parseStage, rngFor, sortChoices, speciesIdFor, stageOf, stoneFor, stonePaths, stoneTarget,
+  parseLevelCap, parseStage, pixelDetailOf, pixelRowsOf, rngFor, sortChoices, speciesIdFor, spriteModeOf, stageOf, stoneFor, stonePaths, stoneTarget,
   timeMatches,
 } from '../hooks/rules'
 import { CHAINS } from './fixtures'
@@ -247,4 +247,33 @@ test('the encounter level never goes past the cap', async () => {
   expect(encounterLevel(5, () => 0.9, 20)).toBe(8)
   expect(encounterLevel(36, () => 0.9, 20)).toBe(20)
   expect(encounterLevel(36, () => 0.9)).toBe(39)
+})
+
+test('the sprite mode: images where the terminal reads a sprite file, pixel art elsewhere, and a choice beats both', async () => {
+  expect(spriteModeOf(undefined, { program: 'ghostty' })).toBe('image')
+  expect(spriteModeOf(undefined, { program: 'iTerm.app' })).toBe('pixel')
+  expect(spriteModeOf(undefined, { program: 'WezTerm' })).toBe('pixel')
+  expect(spriteModeOf(undefined, { term: 'xterm-kitty' })).toBe('image')
+  expect(spriteModeOf(undefined, { program: 'JetBrains-JediTerm' })).toBe('pixel')
+  expect(spriteModeOf(undefined, { program: 'tmux', term: 'screen-256color' })).toBe('pixel')
+  expect(spriteModeOf(undefined, {})).toBe('pixel')
+  expect(spriteModeOf('text', { program: 'ghostty' })).toBe('text')
+  expect(spriteModeOf('image', {})).toBe('image')
+  expect(spriteModeOf('nope', { program: 'ghostty' })).toBe('image')
+})
+
+test('the pixel rows come from 3 to 12, and anything else keeps the fallback', async () => {
+  expect(pixelRowsOf('6', 5)).toBe(6)
+  expect(pixelRowsOf('12', 5)).toBe(12)
+  expect(pixelRowsOf('2', 5)).toBe(5)
+  expect(pixelRowsOf('13', 5)).toBe(5)
+  expect(pixelRowsOf('4.5', 5)).toBe(5)
+  expect(pixelRowsOf('big', 5)).toBe(5)
+  expect(pixelRowsOf(undefined, 4)).toBe(4)
+})
+
+test('the pixel detail is fine unless the half one is asked for', async () => {
+  expect(pixelDetailOf(undefined)).toBe('fine')
+  expect(pixelDetailOf('half')).toBe('half')
+  expect(pixelDetailOf('anything')).toBe('fine')
 })
