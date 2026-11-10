@@ -32,7 +32,7 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 
 ## Requirements
 
-- **Sprites** show as images in **Ghostty** or **kitty**. Other terminals, tmux and the desktop app show a `[Charmander]` text badge instead.
+- **Sprites** show as images in **Ghostty** or **kitty**. Every other terminal, tmux included, draws them as pixel art; the desktop app shows a `[Charmander]` text badge instead. See [Sprites](#sprites).
 - **`curl`**, plus network access to `pokeapi.co` and `raw.githubusercontent.com`. Sprites and data download on first use and are cached in `~/.claude/plugins/data/pokemon/`.
 
 ## Commands
@@ -96,6 +96,18 @@ $ /pokedex 25
 ## The card
 
 Each Pokémon carries its own numbers, read from PokeAPI: its type, its base stats and its ability. The party pane shows them on a card of its own, one per Pokémon, and `/pokemon` prints the active one's in full.
+
+## Sprites
+
+Where the terminal cannot show an image, the sprite is drawn as pixel art made of colored blocks, read from the same PNG. It looks best in a terminal with 24-bit color: if the colors look washed out, start Claude Code with `COLORTERM=truecolor`.
+
+Three environment variables change it:
+
+| Variable | Values | What it does |
+|---|---|---|
+| `POKEMON_SPRITE` | `image` \| `pixel` \| `text` | Forces how the sprite is drawn instead of picking it from the terminal |
+| `POKEMON_PIXEL_ROWS` | `3`–`12` | Height of the pixel art in terminal rows (6 above the prompt, 5 in `/party` by default) |
+| `POKEMON_PIXEL_DETAIL` | `fine` \| `half` | `half` draws with half blocks only, for a font that lacks the quarter blocks |
 
 ## Legal
 
