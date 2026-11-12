@@ -882,7 +882,7 @@ case 'gen':
     }
 
     const hasSprite = Image !== null && (await spriteExists($, active.speciesId, active.shiny))
-    const spriteRows = Math.min(await pixelRows($, 6), e.props.maxRows)
+    const spriteRows = Math.min(await pixelRows($, 8), e.props.maxRows)
     const pixels = Raster !== null ? await pixelCells($, active.speciesId, active.shiny, spriteRows * 2, spriteRows, await pixelDetail($)) : null
     return (
       <Box flexDirection="row" gap={1}>
@@ -941,7 +941,7 @@ case 'gen':
       )
     }
 
-    const spriteRows = await pixelRows($, 5)
+    const spriteRows = await pixelRows($, 8)
     const detail = await pixelDetail($)
     const rows = []
     for (const [index, member] of party.members.entries()) {
