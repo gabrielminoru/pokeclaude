@@ -101,12 +101,19 @@ Each Pokémon carries its own numbers, read from PokeAPI: its type, its base sta
 
 Where the terminal cannot show an image, the sprite is drawn as pixel art made of colored blocks, read from the same PNG. It looks best in a terminal with 24-bit color: if the colors look washed out, start Claude Code with `COLORTERM=truecolor`.
 
+<p>
+  <img src="screenshots/bulbasaur-8bit.png" alt="Bulbasaur as pixel art" width="144">
+  <img src="screenshots/charmander-8bit.png" alt="Charmander as pixel art" width="144">
+  <img src="screenshots/squirtle-8bit.png" alt="Squirtle as pixel art" width="144">
+  <img src="screenshots/dragonite-8bit.png" alt="Dragonite as pixel art" width="144">
+</p>
+
 Three environment variables change it:
 
 | Variable | Values | What it does |
 |---|---|---|
 | `POKEMON_SPRITE` | `image` \| `pixel` \| `text` | Forces how the sprite is drawn instead of picking it from the terminal |
-| `POKEMON_PIXEL_ROWS` | `3`–`12` | Height of the pixel art in terminal rows (6 above the prompt, 5 in `/party` by default) |
+| `POKEMON_PIXEL_ROWS` | `3`–`12` | Height of the pixel art in terminal rows (8 by default, above the prompt and in `/party`) |
 | `POKEMON_PIXEL_DETAIL` | `fine` \| `half` | `half` draws with half blocks only, for a font that lacks the quarter blocks |
 
 ## Legal
