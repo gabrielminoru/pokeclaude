@@ -3,6 +3,8 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Bag, Choice, Dex, Generation, LevelCap, Member, Meta, Party, Path, Progress, Stage, Stone } from '../types'
 import { SPECIES_COUNT, STONES, parseForm, parseOffset, parseProfile, parseSpecies, parseSpeciesList, parseTypes, spritePath, spriteUrl } from './pokeapi'
+import { fromBase64, spriteCells } from './pixels'
+import type { PixelDetail } from './pixels'
 import type { RawNode, RawPokemon, RawSpecies, RawSpeciesList, SpeciesInfo } from './pokeapi'
 import {
   DEFAULT_GENERATION, DEFAULT_LEVEL_CAP, DEFAULT_STAGE, ENCOUNTER_ATTEMPTS, MOOD_LABEL, bar, energyOf,
@@ -10,7 +12,7 @@ import {
   encounterLevel, findTarget, friendshipStep, gainCall, generationCount, generationName, generationOf,
   generationRange, hourOf, isShiny, levelCapName, levelCapOf, levelCapValue, levelUpPaths, localHour, moodOf,
   newProgress, nextEvolutionText, parseGeneration, parseLevelCap, parseStage, rngFor, sortChoices, speciesIdFor,
-  stageName, stageOf, stoneFor, stonePaths, stoneTarget, title, typeFactor, upsertChoice, xpToNext,
+  pixelDetailOf, pixelRowsOf, spriteModeOf, stageName, stageOf, stoneFor, stonePaths, stoneTarget, title, typeFactor, upsertChoice, xpToNext,
 } from './rules'
 import { STAT_ROWS, emptyProfile, statBar, statLine, typeColor } from './cards'
 
@@ -64,6 +66,33 @@ const ensureSprite = async ($: EngineInterface, id: number, shiny: boolean): Pro
   if (await $.fs.exists(path)) return true
   const ran = await $.process.run(['curl', '-fsSL', '--create-dirs', '-o', path, spriteUrl(id, shiny)], { timeoutMs: 20_000 })
   return ran.exitCode === 0 && (await $.fs.exists(path))
+}
+
+const spriteMode = async ($: EngineInterface) =>
+  spriteModeOf(await $.env.get('POKEMON_SPRITE'), { program: await $.env.get('TERM_PROGRAM'), term: await $.env.get('TERM') })
+
+const pixelRows = async ($: EngineInterface, fallback: number) => pixelRowsOf(await $.env.get('POKEMON_PIXEL_ROWS'), fallback)
+
+const pixelDetail = async ($: EngineInterface) => pixelDetailOf(await $.env.get('POKEMON_PIXEL_DETAIL'))
+
+const PIXEL_CELLS = new Map<string, string>()
+
+/** shortcut: the base64 command, which Windows lacks, a native read of the bytes when a Windows user asks. */
+const pixelCells = async ($: EngineInterface, id: number, shiny: boolean, columns: number, rows: number, detail: PixelDetail): Promise<string | null> => {
+  const path = spritePath(await dataDir($), id, shiny)
+  const key = `${path}:${columns}x${rows}:${detail}`
+  const known = PIXEL_CELLS.get(key)
+  if (known) return known
+  if (!(await $.fs.exists(path))) return null
+  const ran = await $.process.run(['base64', '-i', path], { timeoutMs: 5_000 })
+  if (ran.exitCode !== 0 || ran.isStdoutTruncated) return null
+  try {
+    const cells = spriteCells(fromBase64(ran.stdout), columns, rows, detail)
+    PIXEL_CELLS.set(key, cells)
+    return cells
+  } catch {
+    return null
+  }
 }
 
 const localOffset = async ($: EngineInterface): Promise<number | null> => {
@@ -793,7 +822,9 @@ case 'gen':
     const { Box, Button, Text } = elements
     const Input = 'Input' in elements ? elements.Input : null
     // A sprite file is read by the terminal itself; other surfaces (and a sprite not downloaded yet) get a text badge.
-    const Image = e.surface === 'terminal' && 'Image' in elements ? elements.Image : null
+    const mode = e.surface === 'terminal' ? await spriteMode($) : 'text'
+    const Image = mode === 'image' && 'Image' in elements ? elements.Image : null
+    const Raster = mode === 'pixel' && 'Raster' in elements ? elements.Raster : null
     const dir = await dataDir($)
 
     const choice = top ? (
@@ -851,6 +882,8 @@ case 'gen':
     }
 
     const hasSprite = Image !== null && (await spriteExists($, active.speciesId, active.shiny))
+    const spriteRows = Math.min(await pixelRows($, 8), e.props.maxRows)
+    const pixels = Raster !== null ? await pixelCells($, active.speciesId, active.shiny, spriteRows * 2, spriteRows, await pixelDetail($)) : null
     return (
       <Box flexDirection="row" gap={1}>
         {Image && hasSprite ? (
@@ -861,6 +894,8 @@ case 'gen':
             rows={5}
             alt={`[${title(active.name)}]`}
           />
+        ) : Raster && pixels ? (
+          <Raster key={`pixels-${active.speciesId}-${active.shiny ? 's' : 'n'}-${spriteRows}`} columns={spriteRows * 2} rows={spriteRows} cells={pixels} />
         ) : (
           <Text>[{title(active.name)}]</Text>
         )}
@@ -892,7 +927,9 @@ case 'gen':
     const elements = $.ui.resolve(e)
     const { Box, Button, Text } = elements
     const Input = 'Input' in elements ? elements.Input : null
-    const Image = e.surface === 'terminal' && 'Image' in elements ? elements.Image : null
+    const mode = e.surface === 'terminal' ? await spriteMode($) : 'text'
+    const Image = mode === 'image' && 'Image' in elements ? elements.Image : null
+    const Raster = mode === 'pixel' && 'Raster' in elements ? elements.Raster : null
     const dir = await dataDir($)
     const close = <Button key="close-party" label="Close" onPress={() => void $.ui.close({ id: PANE })} />
     if (party.members.length === 0) {
@@ -904,11 +941,14 @@ case 'gen':
       )
     }
 
+    const spriteRows = await pixelRows($, 8)
+    const detail = await pixelDetail($)
     const rows = []
     for (const [index, member] of party.members.entries()) {
       const mine = progress[member.id] ?? newProgress(5, START_FRIENDSHIP, now)
       const isActive = member.id === party.activeId
       const hasSprite = Image !== null && (await spriteExists($, member.speciesId, member.shiny))
+      const pixels = Raster !== null ? await pixelCells($, member.speciesId, member.shiny, spriteRows * 2, spriteRows, detail) : null
       const profile = member.profile ?? emptyProfile
       rows.push(
         <Box
@@ -929,6 +969,8 @@ case 'gen':
                 rows={4}
                 alt={`[${title(member.name)}]`}
               />
+            ) : Raster && pixels ? (
+              <Raster key={`pane-pixels-${member.id}-${member.speciesId}-${member.shiny ? 's' : 'n'}-${spriteRows}`} columns={spriteRows * 2} rows={spriteRows} cells={pixels} />
             ) : (
               <Text dimColor>[{title(member.name)}]</Text>
             )}

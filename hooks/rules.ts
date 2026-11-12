@@ -323,3 +323,22 @@ export const findTarget = (members: Member[], query: string): { member: Member }
   if (matches.length === 0) return { error: `No Pokémon called "${text}" in your party.` }
   return { error: `More than one matches "${text}": slots ${matches.map(m => m.slot).join(', ')}. Use the slot number.` }
 }
+
+export type SpriteMode = 'image' | 'pixel' | 'text'
+
+const IMAGE_PROGRAMS = ['ghostty']
+
+/** shortcut: a fixed list of the terminals that read a sprite file (Ghostty, kitty), the host's own answer when a hook can read it. */
+export const spriteModeOf = (choice: string | undefined, terminal: { program?: string; term?: string }): SpriteMode => {
+  if (choice === 'image' || choice === 'pixel' || choice === 'text') return choice
+  if (terminal.term === 'xterm-kitty' || IMAGE_PROGRAMS.includes(terminal.program ?? '')) return 'image'
+  return 'pixel'
+}
+
+/** shortcut: an environment variable, a `/pokemon sprite` setting once the size is settled. */
+export const pixelRowsOf = (text: string | undefined, fallback: number) => {
+  const rows = Number(text)
+  return Number.isInteger(rows) && rows >= 3 && rows <= 12 ? rows : fallback
+}
+
+export const pixelDetailOf = (text: string | undefined) => (text === 'half' ? 'half' : 'fine')
