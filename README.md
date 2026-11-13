@@ -43,12 +43,15 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 | `/pokemon keep [nickname]` / `letgo` | Answer a wild encounter |
 | `/pokemon stop` / `evolve <species>` | Stop an evolution, or pick a branch |
 | `/pokemon switch \| release \| nick <slot\|name>` | Manage your party (slots 1–6) |
+| `/pokemon store \| take <slot\|name>` | Put a Lv. 100 Pokémon into the Boxes, or take one back |
+| `/pokemon swap <party slot> <box slot>` | Trade a Lv. 100 party member for a boxed one |
 | `/pokemon gen <1–9\|all>` / `region <name>` | Which generation the wild encounters come from |
 | `/pokemon stage <base\|all>` | Which stage of the evolution chain the wild encounters come from |
 | `/pokemon levelcap <party\|off\|n>` | How strong a wild encounter may be |
 | `/pokemon hide` / `show` | Hide or show the display above the prompt |
 | `/party` | Open the party pane with all six sprites; type it again (or press Close) to close it |
-| `/pokedex` | Seen, caught, shinies |
+| `/boxes` | Open the Boxes pane; type it again (or press Close) to close it |
+| `/pokedex` | Open the generation Pokédex; `gen <1–9>` picks a generation |
 | `/pokedex seen` / `caught` / `<number>` | The species you have seen or caught, and one of them by number |
 | `/bag` / `/bag use <stone> <slot\|name>` | Evolution stones |
 
@@ -61,11 +64,17 @@ To try it once without touching settings, run `claude --plugin-dir ~/pokeclaude`
 
 Your party is saved per machine.
 
+## Boxes
+
+A Pokémon that reaches **Lv. 100** can retire to the Boxes and come back later. `/pokemon store <slot|name>` deposits it, `/pokemon take <slot|name>` brings it back, and `/boxes` opens the storage pane with 30 per page. `/pokemon swap <party slot> <box slot>` trades a Lv. 100 party member for a boxed one.
+
+Lower levels are refused, and the last Pokémon in your party can never be stored. With a full party, taking a boxed Pokémon needs a free slot: store a Lv. 100 member or release one first.
+
 ## Generations
 
 Wild encounters come from **Kanto (Generation I)** by default — the 151 species of the first games. `/pokemon gen` shows the one in play, `/pokemon gen 3` or `/pokemon region hoenn` switches to another, and `/pokemon gen all` brings every species back.
 
-The Pokédex counts against the generation in play, so it can actually be finished: `Seen 12/151 · Caught 4/151` in Kanto, out of the 1025 species of the whole dex.
+The Pokédex counts against the generation in play, so it can actually be finished: `Seen 12/151 · Caught 4/151` in Kanto, out of the 1025 species of the whole dex. The pane lets you browse any generation; only the `gen` command changes which generation wild encounters come from.
 
 ## Stages
 
@@ -83,7 +92,13 @@ A species that is too strong for the party does not come at all — a form only 
 
 ## The Pokédex
 
-`/pokedex` counts what you have seen and caught. `/pokedex seen` and `/pokedex caught` list the species themselves, in the order of the Pokédex, and `/pokedex <number>` asks about one of them:
+`/pokedex` opens the Pokédex pane. It is split by generation: pick **I–IX** at the top, 30 Pokémon per page, and press **View** for a registered species. `/pokedex gen 3` opens it on Hoenn without changing the generation wild encounters come from.
+
+A species you have not met is a dark silhouette with `???` and no details. A species you have seen shows its name and sprite with `○ seen`, and a caught species shows `● caught` with its full card: types, ability, base stats and evolution line.
+
+Any species obtained by evolution is registered as caught. Charmander → Charmeleon → Charizard fills all three entries, even without catching the later forms in the wild.
+
+`/pokedex seen` and `/pokedex caught` still list the species as text, in Pokédex order, and `/pokedex <number>` asks about one of them:
 
 ```
 $ /pokedex caught

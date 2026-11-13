@@ -8,14 +8,22 @@ export const BUCKET = 600_000
 export const PARTY_SIZE = 6
 export const MAX_LEVEL = 100
 export const SHINY_ODDS = 1 / 256
+export const SHARE_FACTOR = 0.5
+export const EXP_SHARE_ODDS = 1 / 512
+export const EXP_SHARE_TARGET = 50
+export const BOX_PAGE_SIZE = 30
+export const DEX_PAGE_SIZE = 30
 export const ENCOUNTER_ATTEMPTS = 40
 export const EVOLUTION_COUNTDOWN = 15_000
+export const SHARED_EVOLUTION_COUNTDOWN = 600_000
 export const STARTERS = [
   { id: 1, name: 'bulbasaur' },
   { id: 4, name: 'charmander' },
   { id: 7, name: 'squirtle' },
 ] as const
 export const START_FRIENDSHIP = 70
+
+export const canStore = (level: number) => level >= MAX_LEVEL
 
 export const hourOf = (now: number) => Math.floor(now / HOUR)
 export const bucketOf = (now: number) => Math.floor(now / BUCKET)
@@ -122,6 +130,25 @@ export const generationCount = (generation: Generation): number => {
   return hi - lo + 1
 }
 
+export const GENERATION_NUMERALS = GENERATION_TABLE.map(entry => entry.numeral)
+
+export const caughtInGeneration = (caught: number[], generation: Generation): number => {
+  const [lo, hi] = generationRange(generation)
+  return new Set(caught.filter(id => id >= lo && id <= hi)).size
+}
+
+export const expShareGeneration = (generation: Generation) => generation === 1 || generation === 'all'
+
+export const speciesPage = (generation: Generation, page: number, size: number): number[] => {
+  const [lo, hi] = generationRange(generation)
+  const start = lo + Math.max(0, page) * size
+  const end = Math.min(hi, start + size - 1)
+  return start > hi ? [] : Array.from({ length: end - start + 1 }, (_, index) => start + index)
+}
+
+export const pageCount = (generation: Generation, size: number): number =>
+  Math.max(1, Math.ceil(generationCount(generation) / size))
+
 /** A species id inside the generation, drawn from the RNG. */
 export const speciesIdFor = (rng: Rng, generation: Generation): number => {
   const [lo, hi] = generationRange(generation)
@@ -216,9 +243,9 @@ export const newProgress = (level: number, friendship: number, now: number): Pro
   level, xp: 0, xpFrac: 0, friendship, lastXpAt: now, recentCalls: [],
 })
 
-/** One successful tool call for the active member: mood-scaled EXP (fractions carry), then level-ups. */
-export const gainCall = (progress: Progress, now: number): { progress: Progress; levelsGained: number } => {
-  const pool = progress.xpFrac + MOOD_MULTIPLIER[moodOf(progress, now)]
+/** One gain of `amount` EXP: fractions carry, then level-ups. */
+export const gainExp = (progress: Progress, amount: number, now: number): { progress: Progress; levelsGained: number } => {
+  const pool = progress.xpFrac + amount
   const whole = Math.floor(pool)
   let { level } = progress
   let xp = progress.xp + whole
@@ -241,6 +268,12 @@ export const gainCall = (progress: Progress, now: number): { progress: Progress;
     levelsGained,
   }
 }
+
+/** One successful tool call for the active member: mood-scaled EXP. */
+export const gainCall = (progress: Progress, now: number): { progress: Progress; levelsGained: number } =>
+  gainExp(progress, MOOD_MULTIPLIER[moodOf(progress, now)], now)
+
+export const expShareRoll = (rng: Rng) => rng() < EXP_SHARE_ODDS
 
 /** One 10-minute bucket with a session open: +1 normal, +2 excited, −1 every third bucket while bored. */
 export const friendshipStep = (progress: Progress, now: number, bucket: number): Progress => {
@@ -307,10 +340,10 @@ export const title = (name: string) =>
 
 export const displayName = (member: { nickname: string | null; name: string }) => member.nickname ?? title(member.name).toUpperCase()
 
-/** A slot number (1–6) or a name (nickname or species); ambiguous names are refused with their slots. */
-export const findTarget = (members: Member[], query: string): { member: Member } | { error: string } => {
+/** A slot number or a name (nickname or species); ambiguous names are refused with their slots. */
+export const findTarget = (members: Member[], query: string, where: 'party' | 'boxes' = 'party'): { member: Member } | { error: string } => {
   const text = query.trim()
-  if (!text) return { error: 'Say which one: a slot number (1–6) or a name.' }
+  if (!text) return { error: `Say which one: a slot number (${where === 'party' ? '1–6' : `1–${Math.max(1, members.length)}`}) or a name.` }
   if (/^\d+$/.test(text)) {
     const member = members[Number(text) - 1]
     return member ? { member } : { error: `No Pokémon in slot ${text}.` }
@@ -320,6 +353,6 @@ export const findTarget = (members: Member[], query: string): { member: Member }
     .map((member, index) => ({ member, slot: index + 1 }))
     .filter(({ member }) => member.nickname?.toLowerCase() === lower || member.name === lower.replace(/\s+/g, '-'))
   if (matches.length === 1) return { member: matches[0]!.member }
-  if (matches.length === 0) return { error: `No Pokémon called "${text}" in your party.` }
+  if (matches.length === 0) return { error: `No Pokémon called "${text}" in your ${where}.` }
   return { error: `More than one matches "${text}": slots ${matches.map(m => m.slot).join(', ')}. Use the slot number.` }
 }

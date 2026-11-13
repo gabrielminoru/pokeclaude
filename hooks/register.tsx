@@ -1,16 +1,18 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Bag, Choice, Dex, Generation, LevelCap, Member, Meta, Party, Path, Progress, Stage, Stone } from '../types'
+import type { Bag, Choice, Dex, DexView, Generation, LevelCap, Member, Meta, Party, Path, Progress, Stage, Stone } from '../types'
 import { SPECIES_COUNT, STONES, parseForm, parseOffset, parseProfile, parseSpecies, parseSpeciesList, parseTypes, spritePath, spriteUrl } from './pokeapi'
 import type { RawNode, RawPokemon, RawSpecies, RawSpeciesList, SpeciesInfo } from './pokeapi'
 import {
-  DEFAULT_GENERATION, DEFAULT_LEVEL_CAP, DEFAULT_STAGE, ENCOUNTER_ATTEMPTS, MOOD_LABEL, bar, energyOf,
-  EVOLUTION_COUNTDOWN, HOUR, PARTY_SIZE, START_FRIENDSHIP, STARTERS, acceptChance, bucketOf, displayName,
-  encounterLevel, findTarget, friendshipStep, gainCall, generationCount, generationName, generationOf,
-  generationRange, hourOf, isShiny, levelCapName, levelCapOf, levelCapValue, levelUpPaths, localHour, moodOf,
-  newProgress, nextEvolutionText, parseGeneration, parseLevelCap, parseStage, rngFor, sortChoices, speciesIdFor,
-  stageName, stageOf, stoneFor, stonePaths, stoneTarget, title, typeFactor, upsertChoice, xpToNext,
+  BOX_PAGE_SIZE, DEFAULT_GENERATION, DEFAULT_LEVEL_CAP, DEFAULT_STAGE, DEX_PAGE_SIZE, ENCOUNTER_ATTEMPTS,
+  EVOLUTION_COUNTDOWN, EXP_SHARE_TARGET, GENERATION_NUMERALS, HOUR, MAX_LEVEL, MOOD_LABEL, PARTY_SIZE, SHARE_FACTOR,
+  SHARED_EVOLUTION_COUNTDOWN, START_FRIENDSHIP, STARTERS, acceptChance, bar, bucketOf, canStore, caughtInGeneration,
+  displayName, encounterLevel, energyOf, expShareGeneration, expShareRoll, findTarget, friendshipStep, gainCall, gainExp,
+  generationCount, generationName, generationOf, generationRange, hourOf, isShiny, levelCapName, levelCapOf,
+  levelCapValue, levelUpPaths, localHour, moodOf, newProgress, nextEvolutionText, pageCount, parseGeneration,
+  parseLevelCap, parseStage, rngFor, sortChoices, speciesIdFor, speciesPage, stageName, stageOf, stoneFor, stonePaths,
+  stoneTarget, title, typeFactor, upsertChoice, xpToNext,
 } from './rules'
 import { STAT_ROWS, emptyProfile, statBar, statLine, typeColor } from './cards'
 
@@ -75,6 +77,7 @@ const localOffset = async ($: EngineInterface): Promise<number | null> => {
 
 type Stored = {
   party: Party
+  boxes: Member[]
   progress: Record<string, Progress>
   dex: Dex
   bag: Bag
@@ -84,6 +87,7 @@ type Stored = {
 
 const DEFAULTS: Stored = {
   party: { members: [], activeId: null },
+  boxes: [],
   progress: {},
   dex: { seen: [], caught: [], shinies: [] },
   bag: { stones: {}, received: [] },
@@ -92,6 +96,7 @@ const DEFAULTS: Stored = {
 }
 
 const partyAtom = atom({ plugin: 'pokemon', key: 'party' } as const, DEFAULTS.party)
+const boxesAtom = atom({ plugin: 'pokemon', key: 'boxes' } as const, DEFAULTS.boxes)
 const progressAtom = atom({ plugin: 'pokemon', key: 'progress' } as const, DEFAULTS.progress)
 const dexAtom = atom({ plugin: 'pokemon', key: 'dex' } as const, DEFAULTS.dex)
 const bagAtom = atom({ plugin: 'pokemon', key: 'bag' } as const, DEFAULTS.bag)
@@ -100,9 +105,13 @@ const metaAtom = atom({ plugin: 'pokemon', key: 'meta' } as const, DEFAULTS.meta
 const namingAtom = atom({ plugin: 'pokemon', key: 'naming' } as const, null)
 const renamingAtom = atom({ plugin: 'pokemon', key: 'renaming' } as const, null)
 const hiddenAtom = atom({ plugin: 'pokemon', key: 'isHidden' } as const, false)
+const dexViewAtom = atom({ plugin: 'pokemon', key: 'dexView' } as const, { generation: 1, page: 0, selected: null } as DexView)
+const boxPageAtom = atom({ plugin: 'pokemon', key: 'boxPage' } as const, 0)
 
 const KEYS = Object.keys(DEFAULTS) as (keyof Stored)[]
 const PANE = 'pokemon-party'
+const BOXES_PANE = 'pokemon-boxes'
+const DEX_PANE = 'pokemon-dex'
 const NAMING_FOR = 10 * 60_000
 const DEX_LIST = 20
 
@@ -112,6 +121,7 @@ const load = async <K extends keyof Stored>($: EngineInterface, key: K): Promise
 /** Writes a key's value into its session atom (each atom named directly, as the state scan requires). */
 const mirror = async <K extends keyof Stored>($: EngineInterface, key: K, value: Stored[K]) => {
   if (key === 'party') await update($, partyAtom, () => value as Party)
+  else if (key === 'boxes') await update($, boxesAtom, () => value as Member[])
   else if (key === 'progress') await update($, progressAtom, () => value as Record<string, Progress>)
   else if (key === 'dex') await update($, dexAtom, () => value as Dex)
   else if (key === 'bag') await update($, bagAtom, () => value as Bag)
@@ -121,6 +131,7 @@ const mirror = async <K extends keyof Stored>($: EngineInterface, key: K, value:
 
 const held = async ($: EngineInterface, key: keyof Stored): Promise<unknown> =>
   key === 'party' ? read($, partyAtom)
+  : key === 'boxes' ? read($, boxesAtom)
   : key === 'progress' ? read($, progressAtom)
   : key === 'dex' ? read($, dexAtom)
   : key === 'bag' ? read($, bagAtom)
@@ -173,7 +184,104 @@ const addToDex = (dex: Dex, id: number, shiny: boolean, caught: boolean): Dex =>
   shinies: !caught || !shiny || dex.shinies.includes(id) ? dex.shinies : [...dex.shinies, id],
 })
 
+const maybeUnlockExpShare = async ($: EngineInterface, dex: Dex, meta: Meta, hour: number, roll: boolean) => {
+  if (meta.expShareUnlocked || !expShareGeneration(generationOf(meta))) return
+  const caught = caughtInGeneration(dex.caught, 1)
+  const found = caught >= EXP_SHARE_TARGET || (roll && expShareRoll(rngFor(meta.salt, hour, 'exp-share')))
+  if (!found) return
+  let unlocked = false
+  await edit($, 'meta', m => {
+    if (!m || m.expShareUnlocked) return m
+    unlocked = true
+    return { ...m, expShareUnlocked: true }
+  })
+  if (unlocked) {
+    $.ui.toast(`Professor Oak's aide: "Take this Exp. All! Type /pokemon share-exp to turn it on or off."`)
+  }
+}
+
 const removeChoice = (id: string) => (pending: Choice[]) => pending.filter(c => c.id !== id)
+
+const reconcileBoxes = async ($: EngineInterface) => {
+  const party = await load($, 'party')
+  const boxes = await load($, 'boxes')
+  const partyIds = new Set(party.members.map(m => m.id))
+  const clean = boxes.filter(m => !partyIds.has(m.id))
+  if (clean.length !== boxes.length) await edit($, 'boxes', () => clean)
+}
+
+// shortcut: party and boxes are separate keys; a crash between writes can duplicate until the tick reconciles.
+const storeMember = async ($: EngineInterface, member: Member): Promise<string> => {
+  const party = await load($, 'party')
+  const progress = await load($, 'progress')
+  if (!party.members.some(m => m.id === member.id)) return `${displayName(member)} is not in your party.`
+  const level = progress[member.id]?.level ?? 0
+  if (!canStore(level)) return `Only Lv. 100 Pokémon can be stored. ${displayName(member)} is Lv. ${level}.`
+  if (party.members.length <= 1) return `You can't store your last Pokémon.`
+  await edit($, 'boxes', boxes => (boxes.some(m => m.id === member.id) ? boxes : [...boxes, member]))
+  let stored = false
+  await edit($, 'party', p => {
+    if (!p.members.some(m => m.id === member.id)) return p
+    stored = true
+    const members = p.members.filter(m => m.id !== member.id)
+    return { members, activeId: p.activeId === member.id ? (members[0]?.id ?? null) : p.activeId }
+  })
+  await edit($, 'pending', p => p.filter(c => !((c.kind === 'evolution' || c.kind === 'stone') && c.memberId === member.id)))
+  await update($, namingAtom, n => (n?.memberId === member.id ? null : n))
+  await update($, renamingAtom, r => (r === member.id ? null : r))
+  return `${displayName(member)} was stored in the Boxes.`
+}
+
+const takeMember = async ($: EngineInterface, member: Member): Promise<string> => {
+  const party = await load($, 'party')
+  if (party.members.some(m => m.id === member.id)) {
+    await edit($, 'boxes', boxes => boxes.filter(m => m.id !== member.id))
+    return `${displayName(member)} is already in your party.`
+  }
+  if (party.members.length >= PARTY_SIZE) return `Your party is full (6). Swap a Lv. 100 Pokémon or release one first.`
+  let taken = false
+  await edit($, 'party', p => {
+    if (p.members.length >= PARTY_SIZE || p.members.some(m => m.id === member.id)) return p
+    taken = true
+    return { members: [...p.members, member], activeId: p.activeId ?? member.id }
+  })
+  if (!taken) {
+    const fresh = await load($, 'party')
+    if (fresh.members.some(m => m.id === member.id)) {
+      await edit($, 'boxes', boxes => boxes.filter(m => m.id !== member.id))
+      return `${displayName(member)} is already in your party.`
+    }
+    return `Your party is full (6). Swap a Lv. 100 Pokémon or release one first.`
+  }
+  await edit($, 'boxes', boxes => boxes.filter(m => m.id !== member.id))
+  const now = await $.clock.now()
+  await edit($, 'progress', p => (p[member.id] ? p : { ...p, [member.id]: newProgress(MAX_LEVEL, START_FRIENDSHIP, now) }))
+  return `${displayName(member)} joined your party!`
+}
+
+const swapMembers = async ($: EngineInterface, fromParty: Member, fromBox: Member): Promise<string> => {
+  if (fromParty.id === fromBox.id) return 'Those are the same Pokémon.'
+  const party = await load($, 'party')
+  const boxes = await load($, 'boxes')
+  const progress = await load($, 'progress')
+  if (!party.members.some(m => m.id === fromParty.id)) return `${displayName(fromParty)} is not in your party.`
+  if (!boxes.some(m => m.id === fromBox.id)) return `${displayName(fromBox)} is not in your Boxes.`
+  if (!canStore(progress[fromParty.id]?.level ?? 0)) {
+    return `Only Lv. 100 Pokémon can be stored. ${displayName(fromParty)} is Lv. ${progress[fromParty.id]?.level ?? 0}.`
+  }
+  if (party.members.length >= PARTY_SIZE) {
+    const stored = await storeMember($, fromParty)
+    if (!stored.includes('was stored')) return stored
+    const taken = await takeMember($, fromBox)
+    if (party.activeId === fromParty.id) await edit($, 'party', p => ({ ...p, activeId: fromBox.id }))
+    return `${stored} ${taken}`
+  }
+  const taken = await takeMember($, fromBox)
+  if (taken.includes('party is full')) return taken
+  const stored = await storeMember($, fromParty)
+  if (party.activeId === fromParty.id) await edit($, 'party', p => ({ ...p, activeId: fromBox.id }))
+  return `${taken} ${stored}`
+}
 
 // --- Starter ---
 
@@ -309,17 +417,19 @@ const rollStone = async ($: EngineInterface, now: number) => {
 
 // --- Evolution ---
 
-const startEvolution = async ($: EngineInterface, member: Member, paths: Path[], stone: Stone | null, now: number) => {
+const startEvolution = async (
+  $: EngineInterface, member: Member, paths: Path[], stone: Stone | null, now: number, countdown = EVOLUTION_COUNTDOWN,
+) => {
   const pending = await load($, 'pending')
   if (pending.some(c => c.kind === 'evolution' && c.memberId === member.id)) return
   const choice: Choice = {
     kind: 'evolution', id: `evo-${member.id}-${now}`, createdAt: now, memberId: member.id, paths,
-    deadline: now + EVOLUTION_COUNTDOWN, stone,
+    deadline: now + countdown, stone,
   }
   await edit($, 'pending', p => upsertChoice(p, choice))
   const hint = paths.length > 1 ? `/pokemon evolve ${paths.map(p => p.name).join('|')} or /pokemon stop` : '/pokemon stop'
   await announce($, `What? ${displayName(member)} is evolving!`, hint)
-  $.clock.after(EVOLUTION_COUNTDOWN + 200, () => void settleEvolutions($).catch(() => undefined))
+  $.clock.after(countdown + 200, () => void settleEvolutions($).catch(() => undefined))
 }
 
 const finishEvolution = async ($: EngineInterface, choiceId: string, path: Path): Promise<string> => {
@@ -359,7 +469,9 @@ const finishEvolution = async ($: EngineInterface, choiceId: string, path: Path)
     const stone = choice.stone
     await edit($, 'bag', bag => ({ ...bag, stones: { ...bag.stones, [stone]: Math.max(0, (bag.stones[stone] ?? 0) - 1) } }))
   }
-  await edit($, 'dex', dex => addToDex(dex, path.id, member.shiny, true))
+  const dex = await edit($, 'dex', d => addToDex(d, path.id, member.shiny, true))
+  const meta = await load($, 'meta')
+  if (meta) await maybeUnlockExpShare($, dex, meta, hourOf(await $.clock.now()), false)
   const text = `✨ Congratulations! Your ${before} evolved into ${title(path.name).toUpperCase()}!`
   $.ui.toast(text)
   return text
@@ -390,16 +502,25 @@ const settleEvolutions = async ($: EngineInterface) => {
 let ticking = false
 let lastMeal = '' // the last tool that fed the active Pokémon, shown while a turn runs
 
+const grewTo = async (
+  $: EngineInterface, member: Member, progress: Progress | undefined, levelsGained: number, now: number,
+  countdown = EVOLUTION_COUNTDOWN,
+) => {
+  if (levelsGained <= 0 || !progress) return
+  $.ui.toast(`${displayName(member)} grew to Lv. ${progress.level}!`)
+  const meta = await load($, 'meta')
+  const paths = levelUpPaths(member.chain, progress.level, progress.friendship, localHour(now, meta?.utcOffsetMinutes ?? 0))
+  if (paths.length > 0) await startEvolution($, member, paths, null, now, countdown)
+}
+
 /** Fills in a member's missing profile, for a Pokémon caught before the plugin knew about them. */
-const fillProfile = async ($: EngineInterface, memberId: string): Promise<void> => {
-  const member = (await load($, 'party')).members.find(m => m.id === memberId)
-  if (!member || member.profile) return
+const fillProfile = async ($: EngineInterface, member: Member): Promise<void> => {
+  if (member.profile) return
   const profile = await profileOf($, member.speciesId).catch(() => undefined)
   if (!profile) return
-  await edit($, 'party', party => ({
-    ...party,
-    members: party.members.map(m => (m.id === memberId ? { ...m, profile } : m)),
-  }))
+  const patch = (m: Member) => (m.id === member.id ? { ...m, profile } : m)
+  await edit($, 'party', party => ({ ...party, members: party.members.map(patch) }))
+  await edit($, 'boxes', boxes => boxes.map(patch))
 }
 
 const tick = async ($: EngineInterface) => {
@@ -408,13 +529,18 @@ const tick = async ($: EngineInterface) => {
   try {
     const now = await $.clock.now()
     await syncAll($)
+    await reconcileBoxes($).catch(() => undefined)
     await settleEvolutions($).catch(() => undefined)
     await friendshipTick($, now).catch(() => undefined)
+    const meta = await load($, 'meta')
+    if (meta) await maybeUnlockExpShare($, await load($, 'dex'), meta, hourOf(now), false).catch(() => undefined)
     await rollEncounter($, now).catch(() => undefined)
     await rollStone($, now).catch(() => undefined)
-    for (const member of (await load($, 'party')).members) {
+    const party = await load($, 'party')
+    const boxes = await load($, 'boxes')
+    for (const member of [...party.members, ...boxes]) {
       await ensureSprite($, member.speciesId, member.shiny).catch(() => false)
-      if (!member.profile) await fillProfile($, member.id)
+      if (!member.profile) await fillProfile($, member)
     }
     const naming = await read($, namingAtom)
     if (naming && naming.until <= now) await update($, namingAtom, () => null)
@@ -465,7 +591,11 @@ const keepEncounter = async ($: EngineInterface, nickname?: string): Promise<str
   await edit($, 'pending', removeChoice(choice.id))
   if (!added) return 'Someone was faster: it is already in your party, or the party filled up.'
   await edit($, 'progress', p => ({ ...p, [member.id]: newProgress(choice.level, START_FRIENDSHIP, now) }))
-  await edit($, 'dex', dex => addToDex(dex, member.speciesId, member.shiny, true))
+  const before = await load($, 'dex')
+  const dex = await edit($, 'dex', d => addToDex(d, member.speciesId, member.shiny, true))
+  const meta = await load($, 'meta')
+  const newGenOne = choice.speciesId >= 1 && choice.speciesId <= 151 && !before.caught.includes(choice.speciesId)
+  if (meta) await maybeUnlockExpShare($, dex, meta, choice.hour, newGenOne)
   if (!member.nickname) await update($, namingAtom, () => ({ memberId: member.id, until: now + NAMING_FOR }))
   const text = `Gotcha! ${displayName(member)} was caught!`
   $.ui.toast(text)
@@ -550,6 +680,26 @@ const partyText = (party: Party, progress: Record<string, Progress>) =>
     .map((m, i) => `${i + 1}. ${m.id === party.activeId ? '▶ ' : ''}${displayName(m)} (${title(m.name)} Lv. ${progress[m.id]?.level ?? '?'})`)
     .join('\n')
 
+const boxesText = (boxes: Member[]) => `Boxes: ${boxes.length} stored · /boxes`
+
+const dexSummary = async ($: EngineInterface, dex: Dex, generation: Generation): Promise<string> => {
+  const [lo, hi] = generationRange(generation)
+  const total = generationCount(generation)
+  const inRange = (id: number) => id >= lo && id <= hi
+  const shinies: string[] = []
+  for (const id of dex.shinies.filter(inRange)) shinies.push(await speciesInfo($, id).then(s => title(s.name)).catch(() => `#${id}`))
+  return [
+    `${capitalize(generationName(generation))} · Seen ${dex.seen.filter(inRange).length}/${total} · Caught ${dex.caught.filter(inRange).length}/${total}`,
+    `Shinies: ${shinies.length ? shinies.join(', ') : 'none yet'}`,
+    'The list: /pokedex seen · /pokedex caught · /pokedex <number>',
+  ].join('\n')
+}
+
+const preloadDexPage = async ($: EngineInterface, generation: number, page: number, dex: Dex) => {
+  const ids = speciesPage(generation, page, DEX_PAGE_SIZE).filter(id => dex.seen.includes(id) || dex.caught.includes(id))
+  await Promise.allSettled(ids.map(id => ensureSprite($, id, dex.shinies.includes(id))))
+}
+
 const dexStatus = async ($: EngineInterface, dex: Dex, id: number): Promise<string> => {
   const name = await speciesInfo($, id).then(s => title(s.name)).catch(() => `#${id}`)
   const state = dex.caught.includes(id) ? 'caught' : dex.seen.includes(id) ? 'seen' : 'not seen'
@@ -576,11 +726,13 @@ const stageText = (stage: Stage) =>
 const HELP = [
   '/pokemon                         active Pokémon stats',
   '/pokemon switch|release <slot|name>, /pokemon nick <slot|name> <nickname>',
+  '/pokemon store|take <slot|name>  move a Lv. 100 Pokémon in or out of the Boxes',
+  '/pokemon swap <party slot> <box slot>  trade a Lv. 100 party member for a boxed one',
   '/pokemon keep [nickname] | letgo | stop | evolve <species> | starter <name>',
 '/pokemon gen|region <1-9|all>     wild encounters come from one generation',
   '/pokemon stage <base|all>         wild encounters come from one stage of the chain',
   '/pokemon levelcap <party|off|n>   wild encounters never go past a level',
-  '/pokemon hide|show · /party · /pokedex · /bag [use <stone> <slot|name>]',
+  '/pokemon hide|show · /party · /boxes · /pokedex · /bag [use <stone> <slot|name>]',
 ].join('\n')
 
 // --- Hooks ---
@@ -605,9 +757,10 @@ generation: DEFAULT_GENERATION,
     await ensureStarterChoice($, now)
 
     for (const [name, description, argumentHint] of [
-['pokemon', 'Your active Pokémon, and the choices: keep, letgo, stop, evolve, nick, switch, release, gen, stage, levelcap', '[keep|letgo|stop|evolve|nick|switch|release|starter|gen|region|stage|levelcap|hide|show] …'],
+      ['pokemon', 'Your active Pokémon, and the choices: keep, letgo, stop, evolve, nick, switch, release, store, take, swap, gen, stage, levelcap', '[keep|letgo|stop|evolve|nick|switch|release|store|take|swap|starter|gen|region|stage|levelcap|hide|show] …'],
       ['party', 'Open or close your Pokémon party', '[open|close]'],
-      ['pokedex', 'Seen and caught Pokémon, their list, and your shinies', '[seen|caught|<number>]'],
+      ['boxes', 'Open or close your Pokémon Boxes', '[open|close]'],
+      ['pokedex', 'Browse the Pokédex by generation, or list seen and caught Pokémon', '[open|close|gen <1-9>|seen|caught|<number>]'],
       ['bag', 'Your evolution stones; /bag use <stone> <slot|name>', '[use <stone> <slot|name>]'],
     ] as const) {
       await $.command.register({ name, description, ...(argumentHint ? { argumentHint } : {}) })
@@ -623,7 +776,8 @@ generation: DEFAULT_GENERATION,
     if (ran.deny !== undefined || ran.isError === true) return ran
     try {
       const now = await $.clock.now()
-      const active = activeOf(await load($, 'party'))
+      const party = await load($, 'party')
+      const active = activeOf(party)
       if (!active) return ran
       lastMeal = e.tool
       let levelsGained = 0
@@ -632,12 +786,24 @@ generation: DEFAULT_GENERATION,
         levelsGained = gained.levelsGained
         return { ...p, [active.id]: gained.progress }
       })
-      const mine = progress[active.id]
-      if (levelsGained > 0 && mine) {
-        $.ui.toast(`${displayName(active)} grew to Lv. ${mine.level}!`)
-        const meta = await load($, 'meta')
-        const paths = levelUpPaths(active.chain, mine.level, mine.friendship, localHour(now, meta?.utcOffsetMinutes ?? 0))
-        if (paths.length > 0) await startEvolution($, active, paths, null, now)
+      await grewTo($, active, progress[active.id], levelsGained, now)
+
+      const meta = await load($, 'meta')
+      const sharing = meta?.expShareUnlocked && meta.expShare ? party.members.filter(m => m.id !== active.id) : []
+      if (sharing.length === 0) return ran
+      const gained = new Map<string, { progress: Progress; levelsGained: number }>()
+      await edit($, 'progress', p => {
+        const updated = { ...p }
+        for (const member of sharing) {
+          const shared = gainExp(p[member.id] ?? newProgress(5, START_FRIENDSHIP, now), SHARE_FACTOR, now)
+          updated[member.id] = shared.progress
+          gained.set(member.id, shared)
+        }
+        return updated
+      })
+      for (const member of sharing) {
+        const shared = gained.get(member.id)
+        if (shared) await grewTo($, member, shared.progress, shared.levelsGained, now, SHARED_EVOLUTION_COUNTDOWN)
       }
     } catch {
       // a Pokémon bug never fails a tool call
@@ -657,7 +823,7 @@ generation: DEFAULT_GENERATION,
         const active = activeOf(party)
         if (!active) return { text: `No Pokémon yet: choose a starter. /pokemon starter bulbasaur|charmander|squirtle\n\n${HELP}` }
         const generation = generationOf(await load($, 'meta'))
-        return { text: `${generationLine(generation)}\n\n${statsText(active, (await load($, 'progress'))[active.id], now)}\n\n${partyText(party, await load($, 'progress'))}\n\n${HELP}` }
+        return { text: `${generationLine(generation)}\n\n${statsText(active, (await load($, 'progress'))[active.id], now)}\n\n${partyText(party, await load($, 'progress'))}\n${boxesText(await load($, 'boxes'))}\n\n${HELP}` }
       }
       case 'starter': return { text: await chooseStarter($, arg) }
 case 'gen':
@@ -667,6 +833,10 @@ case 'gen':
         const generation = parseGeneration(arg)
         if (generation === null) return { text: `I don't know "${arg.trim()}".\n\n${generationText(current)}` }
         await edit($, 'meta', m => (m ? { ...m, generation } : m))
+        if (expShareGeneration(generation)) {
+          const meta = await load($, 'meta')
+          if (meta) await maybeUnlockExpShare($, await load($, 'dex'), meta, hourOf(now), false)
+        }
         return { text: `Wild encounters now come from ${generationName(generation)} · ${generationCount(generation)} species.` }
       }
       case 'stage': {
@@ -686,6 +856,32 @@ case 'gen':
         if (cap === null) return { text: `I don't know "${arg.trim()}".\n\n${line}` }
         await edit($, 'meta', m => (m ? { ...m, levelCap: cap } : m))
         return { text: `Wild encounters now come at ${levelCapName(cap, levelCapValue(cap, levels))}.` }
+      }
+      case 'store': {
+        const found = target(arg)
+        return { text: 'error' in found ? found.error : await storeMember($, found.member) }
+      }
+      case 'take': {
+        const found = findTarget(await load($, 'boxes'), arg, 'boxes')
+        return { text: 'error' in found ? found.error : await takeMember($, found.member) }
+      }
+      case 'swap': {
+        const [partySlot = '', boxSlot = ''] = rest
+        if (!/^\d+$/.test(partySlot) || !/^\d+$/.test(boxSlot)) return { text: 'Use /pokemon swap <party slot> <box slot>.' }
+        const foundParty = findTarget(party.members, partySlot)
+        if ('error' in foundParty) return { text: foundParty.error }
+        const foundBox = findTarget(await load($, 'boxes'), boxSlot, 'boxes')
+        if ('error' in foundBox) return { text: foundBox.error }
+        return { text: await swapMembers($, foundParty.member, foundBox.member) }
+      }
+      case 'share-exp': {
+        const meta = await load($, 'meta')
+        if (!meta?.expShareUnlocked) return { text: HELP }
+        const enabled = !meta.expShare
+        await edit($, 'meta', m => (m ? { ...m, expShare: enabled } : m))
+        return { text: enabled
+          ? 'EXP Share on: every other party member gains a flat 0.5 EXP per successful tool call.'
+          : 'EXP Share off.' }
       }
       case 'keep': return { text: await keepEncounter($, arg) }
       case 'letgo': return { text: await letGo($) }
@@ -733,13 +929,34 @@ case 'gen':
     return { text: partyText(await load($, 'party'), await load($, 'progress')) || 'No Pokémon yet.' }
   })
 
+  on('command.run', { command: 'boxes' }, async ($, e) => {
+    const isOpen = (await $.ui.panes()).some(pane => pane.id === BOXES_PANE)
+    if (e.args.trim() === 'close' || (isOpen && e.args.trim() !== 'open')) {
+      await $.ui.close({ id: BOXES_PANE })
+      return { text: 'Boxes closed.' }
+    }
+    await $.ui.open({ id: BOXES_PANE, title: 'Pokémon Boxes' })
+    return { text: boxesText(await load($, 'boxes')) }
+  })
+
   on('command.run', { command: 'pokedex' }, async ($, e) => {
     const dex = await load($, 'dex')
     const generation = generationOf(await load($, 'meta'))
     const [lo, hi] = generationRange(generation)
-    const total = generationCount(generation)
     const inRange = (id: number) => id >= lo && id <= hi
     const arg = e.args.trim()
+    if (arg === 'close') {
+      await $.ui.close({ id: DEX_PANE })
+      return { text: 'Pokédex closed.' }
+    }
+    if (arg === 'gen' || arg.startsWith('gen ')) {
+      const viewed = parseGeneration(arg.slice(3).trim())
+      if (viewed === null || viewed === 'all') return { text: 'Use /pokedex gen <1-9>.' }
+      await update($, dexViewAtom, () => ({ generation: viewed, page: 0, selected: null }))
+      await preloadDexPage($, viewed, 0, dex)
+      await $.ui.open({ id: DEX_PANE, title: 'Pokédex' })
+      return { text: `Pokédex: ${generationName(viewed)}.` }
+    }
     if (/^\d+$/.test(arg)) return { text: await dexStatus($, dex, Number(arg)) }
     if (arg === 'seen' || arg === 'caught') {
       const ids = (arg === 'seen' ? dex.seen : dex.caught).filter(inRange)
@@ -750,15 +967,11 @@ case 'gen':
       const more = list.length > DEX_LIST ? `, and ${list.length - DEX_LIST} more` : ''
       return { text: `${label} (${list.length}): ${list.slice(0, DEX_LIST).join(', ')}${more}` }
     }
-    const shinies: string[] = []
-    for (const id of dex.shinies.filter(inRange)) shinies.push(await speciesInfo($, id).then(s => title(s.name)).catch(() => `#${id}`))
-    return {
-      text: [
-        `${capitalize(generationName(generation))} · Seen ${dex.seen.filter(inRange).length}/${total} · Caught ${dex.caught.filter(inRange).length}/${total}`,
-        `Shinies: ${shinies.length ? shinies.join(', ') : 'none yet'}`,
-        'The list: /pokedex seen · /pokedex caught · /pokedex <number>',
-      ].join('\n'),
-    }
+    const viewed = generation === 'all' ? 1 : generation
+    await update($, dexViewAtom, () => ({ generation: viewed, page: 0, selected: null }))
+    await preloadDexPage($, viewed, 0, dex)
+    await $.ui.open({ id: DEX_PANE, title: 'Pokédex' })
+    return { text: await dexSummary($, dex, generation) }
   })
 
   on('command.run', { command: 'bag' }, async ($, e) => {
@@ -969,6 +1182,9 @@ case 'gen':
             <Box flexDirection="row" gap={1}>
               {!isActive && <Button key={`active-${member.id}`} label="Make active" onPress={() => void switchTo($, member)} />}
               <Button key={`rename-btn-${member.id}`} label="Rename" onPress={() => void update($, renamingAtom, () => member.id)} />
+              {canStore(mine.level) && party.members.length > 1 && (
+                <Button key={`store-${member.id}`} label="Store" onPress={() => void storeMember($, member).then(text => $.ui.toast(text))} />
+              )}
               {party.members.length > 1 && (
                 <Button key={`release-${member.id}`} label="Release" onPress={() => void release($, member).then(text => $.ui.toast(text))} />
               )}
@@ -980,6 +1196,181 @@ case 'gen':
     return (
       <Box flexDirection="column" gap={1}>
         {rows}
+        {close}
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: BOXES_PANE }, async ($, e) => {
+    const boxes = await read($, boxesAtom)
+    const progress = await read($, progressAtom)
+    const page = await read($, boxPageAtom)
+    const elements = $.ui.resolve(e)
+    const { Box, Button, Text } = elements
+    const Image = e.surface === 'terminal' && 'Image' in elements ? elements.Image : null
+    const dir = await dataDir($)
+    const close = <Button key="close-boxes" label="Close" onPress={() => void $.ui.close({ id: BOXES_PANE })} />
+    const pages = Math.max(1, Math.ceil(boxes.length / BOX_PAGE_SIZE))
+    const current = Math.min(page, pages - 1)
+    const shown = boxes.slice(current * BOX_PAGE_SIZE, current * BOX_PAGE_SIZE + BOX_PAGE_SIZE)
+    const rows = []
+    for (const [index, member] of shown.entries()) {
+      const hasSprite = Image !== null && (await spriteExists($, member.speciesId, member.shiny))
+      const profile = member.profile ?? emptyProfile
+      const mine = progress[member.id] ?? newProgress(MAX_LEVEL, START_FRIENDSHIP, 0)
+      rows.push(
+        <Box
+          key={`box-row-${member.id}`}
+          flexDirection="column"
+          borderStyle="round"
+          borderDimColor
+          paddingX={1}
+          paddingY={0}
+        >
+          <Box flexDirection="row" gap={1}>
+            {Image && hasSprite ? (
+              <Image
+                key={`box-sprite-${member.id}-${member.speciesId}`}
+                source={{ file: spritePath(dir, member.speciesId, member.shiny), format: 'png' }}
+                columns={8}
+                rows={4}
+                alt={`[${title(member.name)}]`}
+              />
+            ) : (
+              <Text dimColor>[{title(member.name)}]</Text>
+            )}
+            <Box flexDirection="column" flexGrow={1}>
+              <Box flexDirection="row" gap={1}>
+                <Text dimColor>{current * BOX_PAGE_SIZE + index + 1}.</Text>
+                <Text bold>{member.shiny ? '✨' : ''}{displayName(member)}</Text>
+                <Text dimColor>{title(member.name)} Lv.{mine.level}</Text>
+              </Box>
+              {profile.types.length > 0 && (
+                <Box flexDirection="row" gap={1}>
+                  {profile.types.map(t => (
+                    <Text key={`box-type-${member.id}-${t}`} color={typeColor(t)}>{title(t)}</Text>
+                  ))}
+                </Box>
+              )}
+              {profile.ability && <Text dimColor>Ability: {title(profile.ability)}</Text>}
+            </Box>
+            <Button key={`take-${member.id}`} label="Take" onPress={() => void takeMember($, member).then(text => $.ui.toast(text))} />
+          </Box>
+        </Box>,
+      )
+    }
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text bold>Boxes · {boxes.length} stored</Text>
+        {boxes.length === 0
+          ? <Text dimColor>Your Boxes are empty. Store a Lv. 100 Pokémon from the party pane.</Text>
+          : rows}
+        <Box flexDirection="row" gap={1}>
+          <Button key="box-prev" label="Prev" onPress={() => void update($, boxPageAtom, p => Math.max(0, p - 1))} />
+          <Text dimColor>Page {current + 1}/{pages}</Text>
+          <Button key="box-next" label="Next" onPress={() => void update($, boxPageAtom, p => Math.min(pages - 1, p + 1))} />
+        </Box>
+        {close}
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: DEX_PANE }, async ($, e) => {
+    const dex = await read($, dexAtom)
+    const view = await read($, dexViewAtom)
+    const elements = $.ui.resolve(e)
+    const { Box, Button, Text } = elements
+    const Image = e.surface === 'terminal' && 'Image' in elements ? elements.Image : null
+    const dir = await dataDir($)
+    const generation = view.generation
+    const [lo, hi] = generationRange(generation)
+    const total = generationCount(generation)
+    const pages = pageCount(generation, DEX_PAGE_SIZE)
+    const current = Math.min(view.page, pages - 1)
+    const ids = speciesPage(generation, current, DEX_PAGE_SIZE)
+    const names = await speciesNames($)
+    const seen = dex.seen.filter(id => id >= lo && id <= hi).length
+    const caught = dex.caught.filter(id => id >= lo && id <= hi).length
+    const stateOf = (id: number) => dex.caught.includes(id) ? 'caught' : dex.seen.includes(id) ? 'seen' : 'unknown'
+    const close = <Button key="close-dex" label="Close" onPress={() => void $.ui.close({ id: DEX_PANE })} />
+    const chooseGeneration = async (next: number) => {
+      await preloadDexPage($, next, 0, dex)
+      await update($, dexViewAtom, () => ({ generation: next, page: 0, selected: null }))
+    }
+    const changePage = async (next: number) => {
+      await preloadDexPage($, generation, next, dex)
+      await update($, dexViewAtom, v => ({ ...v, page: next, selected: null }))
+    }
+    const generationButtons = Array.from({ length: GENERATION_NUMERALS.length }, (_, index) => index + 1).map(g => (
+      <Button key={`dex-gen-${g}`} label={GENERATION_NUMERALS[g - 1] ?? String(g)} onPress={() => void chooseGeneration(g)} />
+    ))
+    let detail = null
+    if (view.selected !== null) {
+      const id = view.selected
+      const state = stateOf(id)
+      if (state !== 'unknown') {
+        const profile = (await profileOf($, id).catch(() => undefined)) ?? emptyProfile
+        const info = state === 'caught' ? await speciesInfo($, id).catch(() => null) : null
+        const chain = info ? await formOf($, info).catch(() => null) : null
+        const name = names.get(id) ?? `#${id}`
+        detail = (
+          <Box key={`dex-detail-${id}`} flexDirection="column" borderStyle="round" paddingX={1}>
+            <Text bold>
+              #{String(id).padStart(3, '0')} {title(name)} {state === 'caught' ? '● caught' : '○ seen'}
+              {dex.shinies.includes(id) ? ' ✨' : ''}
+            </Text>
+            {profile.types.length > 0 && <Text>{profile.types.map(title).join(' · ')}</Text>}
+            {profile.ability && <Text dimColor>Ability: {title(profile.ability)}</Text>}
+            {profile.stats.hp > 0 && <Text>{statLine(profile.stats)}</Text>}
+            {state === 'caught' && chain && <Text dimColor>Evolves: {nextEvolutionText(chain)}</Text>}
+          </Box>
+        )
+      }
+    }
+    const rows = []
+    for (const id of ids) {
+      const state = stateOf(id)
+      const name = names.get(id) ?? `#${id}`
+      const shiny = state === 'caught' && dex.shinies.includes(id)
+      const hasSprite = state !== 'unknown' && Image !== null && (await spriteExists($, id, shiny))
+      rows.push(
+        <Box key={`dex-row-${id}`} flexDirection="row" gap={1}>
+          {state === 'unknown' ? (
+            <Text dimColor>▓▓</Text>
+          ) : Image && hasSprite ? (
+            <Image
+              key={`dex-sprite-${id}-${shiny ? 's' : 'n'}`}
+              source={{ file: spritePath(dir, id, shiny), format: 'png' }}
+              columns={6}
+              rows={3}
+              alt={`[${title(name)}]`}
+            />
+          ) : (
+            <Text dimColor>[{title(name)}]</Text>
+          )}
+          <Text dimColor>#{String(id).padStart(3, '0')}</Text>
+          <Text bold={state === 'caught'}>{state === 'unknown' ? '???' : title(name)}</Text>
+          {state === 'caught' && <Text color="brightRed">●</Text>}
+          {state === 'seen' && <Text dimColor>○</Text>}
+          {shiny && <Text color="brightYellow">✨</Text>}
+          {state !== 'unknown' && (
+            <Button key={`dex-view-${id}`} label="View" onPress={() => void update($, dexViewAtom, v => ({ ...v, selected: id }))} />
+          )}
+        </Box>,
+      )
+      if (view.selected === id && detail) rows.push(detail)
+    }
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text bold>Pokédex · {generationName(generation)}</Text>
+        <Text dimColor>Seen {seen}/{total} · Caught {caught}/{total}</Text>
+        <Box flexDirection="row" gap={1}>{generationButtons}</Box>
+        {rows}
+        <Box flexDirection="row" gap={1}>
+          <Button key="dex-prev" label="Prev" onPress={() => void changePage(Math.max(0, current - 1))} />
+          <Text dimColor>Page {current + 1}/{pages}</Text>
+          <Button key="dex-next" label="Next" onPress={() => void changePage(Math.min(pages - 1, current + 1))} />
+        </Box>
         {close}
       </Box>
     )

@@ -62,9 +62,13 @@ export type Meta = {
 generation?: Generation
   stage?: Stage
   levelCap?: LevelCap
+  expShare?: boolean
+  expShareUnlocked?: boolean
 }
 
 export type Dex = { seen: number[]; caught: number[]; shinies: number[] }
+
+export type DexView = { generation: number; page: number; selected: number | null }
 
 export type Bag = { stones: Partial<Record<Stone, number>>; received: string[] }
 
@@ -86,6 +90,7 @@ declare module 'claude-code' {
   interface PluginState {
     pokemon: {
       party: Party
+      boxes: Member[]
       progress: Record<string, Progress>
       dex: Dex
       bag: Bag
@@ -94,6 +99,8 @@ declare module 'claude-code' {
       naming: Naming
       renaming: string | null
       isHidden: boolean
+      dexView: DexView
+      boxPage: number
     }
   }
 }

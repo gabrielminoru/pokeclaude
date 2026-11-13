@@ -2,9 +2,9 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import type { Bag, Choice, Member, Meta, Party, Progress } from '../types'
+import type { Bag, Choice, Dex, Member, Meta, Party, Progress } from '../types'
 import { parseForm } from '../hooks/pokeapi'
-import { HOUR, newProgress, stoneFor } from '../hooks/rules'
+import { HOUR, expShareRoll, newProgress, rngFor, stoneFor } from '../hooks/rules'
 import { CHAINS, POKEMON, SPECIES } from './fixtures'
 
 // 15:00 UTC = noon at -0300: daytime.
@@ -74,6 +74,7 @@ type World = { toasts: string[]; files: Set<string>; offline: { sprites: boolean
 const world = (on: On, store: Record<string, unknown> = {}, now = T0) => {
   const state: World = { toasts: [], files: new Set(), offline: { sprites: false, api: false }, evolved: false, advanced: false }
   const texts = new Map<string, string>()
+  const panes = new Map<string, { id: string; title: string }>()
   const clock = mock.clock(on, { now })
   const db = new Map<string, unknown>(Object.entries(store)) // the plugin's store, readable by the test
   on('store.get', ($, e) => ({ value: db.get(e.key) }))
@@ -88,7 +89,17 @@ const world = (on: On, store: Record<string, unknown> = {}, now = T0) => {
   on('store.keys', () => ({ value: [...db.keys()] }))
   mock.env(on, { HOME })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('ui.open', ($, e) => {
+    panes.set(e.id, { id: e.id, title: e.title })
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', ($, e) => {
+    panes.delete(e.id)
+    return { value: undefined }
+  })
+  on('ui.panes', () => ({ value: [...panes.values()].map(pane => ({ ...pane, isShown: true, isFocused: false, isPlaced: true })) }))
   on('ui.toast', ($, e) => {
     state.toasts.push(e.text)
     return { value: undefined }
@@ -115,7 +126,7 @@ const { status, text } = answer(e.url, state)
     }
     return ran(127)
   })
-  return { clock, state, db }
+  return { clock, state, db, panes }
 }
 
 type Dollar = Parameters<TestBody>[0]
@@ -367,8 +378,104 @@ test('the party pane lists every member with its buttons', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /▶ active/ })).toBeDefined()
     expect(await ui.find({ key: 'active-b' })).toBeDefined()
     expect(await ui.find({ key: 'release-a' })).toBeDefined()
+    expect(await ui.find({ key: 'store-a' })).toBeUndefined()
     await ui.unmount()
   }
+})
+
+test('a Lv. 100 party member can be stored and taken back; lower levels are refused', async ($, on) => {
+  const a = mon('a', 2, 'charmander', 'BLAZE')
+  const b = mon('b', 67, 'eevee')
+  const progress = { ...progressOf([a], 100), ...progressOf([b], 42) }
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([a, b]), progress })
+  await start($, clock)
+  expect(await pokemon($, 'store 1')).toContain('BLAZE was stored in the Boxes.')
+  expect((db.get('boxes') as Member[]).map(m => m.id)).toEqual(['a'])
+  expect((db.get('party') as Party).members.map(m => m.id)).toEqual(['b'])
+  expect((db.get('progress') as Record<string, Progress>).a?.level).toBe(100)
+  expect(await pokemon($, 'store 1')).toContain('Only Lv. 100 Pokémon can be stored. EEVEE is Lv. 42.')
+  expect(await pokemon($, 'take 1')).toContain('BLAZE joined your party!')
+  expect((db.get('party') as Party).members.map(m => m.id)).toEqual(['b', 'a'])
+  expect(db.get('boxes')).toEqual([])
+})
+
+test('the last party member cannot be stored', async ($, on) => {
+  const a = mon('a', 2, 'charmander')
+  const { clock } = world(on, { meta: meta(), party: partyOf([a]), progress: progressOf([a], 100) })
+  await start($, clock)
+  expect(await pokemon($, 'store 1')).toContain("You can't store your last Pokémon.")
+})
+
+test('a full party cannot take a boxed Pokémon; swap trades a Lv. 100 member', async ($, on) => {
+  const six = Array.from({ length: 6 }, (_, i) => mon(`m${i}`, 2, 'charmander'))
+  const boxed = mon('boxed', 67, 'eevee')
+  const { clock, db } = world(on, {
+    meta: meta(), party: partyOf(six), boxes: [boxed], progress: progressOf(six, 100),
+  })
+  await start($, clock)
+  expect(await pokemon($, 'take 1')).toContain('Your party is full (6)')
+  expect(await pokemon($, 'swap 1 1')).toContain('was stored in the Boxes.')
+  expect((db.get('party') as Party).members.map(m => m.id)).toContain('boxed')
+  expect((db.get('party') as Party).members.map(m => m.id)).not.toContain('m0')
+  expect((db.get('party') as Party).activeId).toBe('boxed')
+  expect((db.get('boxes') as Member[]).map(m => m.id)).toEqual(['m0'])
+})
+
+test('swap also works when the party has a single member', async ($, on) => {
+  const a = mon('a', 2, 'charmander')
+  const boxed = mon('b', 67, 'eevee')
+  const { clock, db } = world(on, {
+    meta: meta(), party: partyOf([a]), boxes: [boxed], progress: progressOf([a, boxed], 100),
+  })
+  await start($, clock)
+  expect(await pokemon($, 'swap 1 1')).toContain('was stored in the Boxes.')
+  expect((db.get('party') as Party).members.map(m => m.id)).toEqual(['b'])
+  expect((db.get('boxes') as Member[]).map(m => m.id)).toEqual(['a'])
+})
+
+test('boxed Pokémon do not gain EXP and are not shared with', async ($, on) => {
+  const a = mon('a', 2, 'charmander')
+  const boxed = mon('b', 67, 'eevee')
+  const { clock, db } = world(on, {
+    meta: meta({ expShare: true, expShareUnlocked: true }), party: partyOf([a]), boxes: [boxed],
+    progress: progressOf([a, boxed]),
+  })
+  await start($, clock)
+  await $.tool.call({ tool: 'Read', file_path: '/tmp/x' })
+  const progress = db.get('progress') as Record<string, Progress>
+  expect([progress.b?.xp, progress.b?.xpFrac]).toEqual([0, 0])
+})
+
+test('the boxes pane lists stored Pokémon and offers Take', async ($, on) => {
+  const a = mon('a', 2, 'charmander', 'BLAZE')
+  const boxed = withProfile(mon('b', 67, 'eevee', 'BUBBLES'))
+  const { clock, panes } = world(on, { meta: meta(), party: partyOf([a]), boxes: [boxed], progress: progressOf([a, boxed], 100) })
+  await start($, clock)
+  await run($, 'boxes', '')
+  expect(panes.has('pokemon-boxes')).toBe(true)
+  expect(await run($, 'boxes', '')).toBe('Boxes closed.')
+  expect(panes.has('pokemon-boxes')).toBe(false)
+  await run($, 'boxes', '')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'pokemon', surface, component: 'Pane', requestId: 'pokemon-boxes', props: { title: 'Pokémon Boxes', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } })
+    expect(await ui.find({ type: 'Text', text: /Boxes · 1 stored/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /BUBBLES/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Eevee Lv\.100/ })).toBeDefined()
+    expect(await ui.find({ key: 'take-b' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('the party pane offers Store only for Lv. 100 members', async ($, on) => {
+  const a = withProfile(mon('a', 2, 'charmander', 'BLAZE'))
+  const b = mon('b', 67, 'eevee')
+  const progress = { ...progressOf([a], 100), ...progressOf([b], 42) }
+  const { clock } = world(on, { meta: meta(), party: partyOf([a, b]), progress })
+  await start($, clock)
+  const ui = await $.ui.mount({ plugin: 'pokemon', surface: 'terminal', component: 'Pane', requestId: 'pokemon-party', props: { title: 'Pokémon party', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } })
+  expect(await ui.find({ key: 'store-a' })).toBeDefined()
+  expect(await ui.find({ key: 'store-b' })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('the dex lists the species you have seen and caught', async ($, on) => {
@@ -397,6 +504,63 @@ test('a long list says how many are left out', async ($, on) => {
   expect(list).toContain('Seen (25):')
   expect(list).toContain('and 5 more')
   expect(await run($, 'pokedex', 'caught')).toBe('Caught: none yet')
+})
+
+test('the Pokédex pane shows generations, statuses and hides unknown species', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, panes } = world(on, {
+    meta: meta(), party: partyOf([starter]), progress: progressOf([starter]),
+    dex: { seen: [4, 37], caught: [4], shinies: [] },
+  })
+  await start($, clock)
+  await run($, 'pokedex', '')
+  expect(panes.has('pokemon-dex')).toBe(true)
+  expect(await run($, 'pokedex', 'close')).toBe('Pokédex closed.')
+  expect(panes.has('pokemon-dex')).toBe(false)
+  await run($, 'pokedex', '')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'pokemon', surface, component: 'Pane', requestId: 'pokemon-dex', props: { title: 'Pokédex', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } })
+    expect(await ui.find({ type: 'Text', text: /Generation I \(Kanto\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Seen 2\/151 · Caught 1\/151/ })).toBeDefined()
+    expect(await ui.find({ key: 'dex-gen-3' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '???' })).toBeDefined()
+    expect(await ui.find({ key: 'dex-view-4' })).toBeDefined()
+    expect(await ui.find({ key: 'dex-view-1' })).toBeUndefined()
+    await ui.press({ key: 'dex-view-4' })
+    expect(await ui.find({ type: 'Text', text: /Ability: Blaze/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Evolves:/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('the Pokédex generation is independent from the wild encounters', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const { clock, db, panes } = world(on, {
+    meta: meta({ generation: 1 }), party: partyOf([starter]), progress: progressOf([starter]),
+    dex: { seen: [4, 37], caught: [4], shinies: [] },
+  })
+  await start($, clock)
+  expect(await run($, 'pokedex', 'gen 3')).toContain('Generation III (Hoenn)')
+  expect((db.get('meta') as Meta).generation).toBe(1)
+  expect(panes.has('pokemon-dex')).toBe(true)
+  const ui = await $.ui.mount({ plugin: 'pokemon', surface: 'terminal', component: 'Pane', requestId: 'pokemon-dex', props: { title: 'Pokédex', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } })
+  expect(await ui.find({ type: 'Text', text: /Generation III \(Hoenn\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Seen 0\/135 · Caught 0\/135/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('evolving registers every stage in the Pokédex', async ($, on) => {
+  const charmander = mon('a', 2, 'charmander')
+  const { clock, db } = world(on, {
+    meta: meta(), party: partyOf([charmander]), progress: progressOf([charmander]),
+    dex: { seen: [4], caught: [4], shinies: [] },
+    pending: [{ kind: 'evolution', id: 'evo-a', createdAt: T0, memberId: 'a', paths: [{ id: 5, name: 'charmeleon' }], deadline: T0 + 15_000, stone: null }],
+  })
+  await start($, clock)
+  expect(await pokemon($, 'evolve charmeleon')).toContain('CHARMELEON')
+  db.set('pending', [{ kind: 'evolution', id: 'evo-a-2', createdAt: T0, memberId: 'a', paths: [{ id: 6, name: 'charizard' }], deadline: T0 + 15_000, stone: null }])
+  expect(await pokemon($, 'evolve charizard')).toContain('CHARIZARD')
+  expect((db.get('dex') as Dex).caught).toEqual([4, 5, 6])
 })
 
 const boxes = (node: unknown): { type?: string; props?: Record<string, unknown>; children?: unknown[] }[] => {
@@ -529,6 +693,124 @@ test('friendship moves once per 10-minute bucket, however many ticks land in it'
   expect(friendship()).toBe(72)
 })
 
+test('EXP Share starts off, shares a flat half with the party, and toggles', async ($, on) => {
+  const a = mon('a', 2, 'charmander')
+  const b = mon('b', 67, 'eevee')
+  const { clock, db } = world(on, {
+    meta: meta({ expShareUnlocked: true }), party: partyOf([a, b]),
+    progress: { ...progressOf([a]), b: { ...newProgress(10, 70, T0), lastXpAt: T0 - 4 * HOUR } },
+  })
+  await start($, clock)
+  await $.tool.call({ tool: 'Read', file_path: '/tmp/x' })
+  let progress = db.get('progress') as Record<string, Progress>
+  expect([progress.b?.xp, progress.b?.xpFrac]).toEqual([0, 0])
+
+  expect(await pokemon($, 'share-exp')).toContain('EXP Share on')
+  expect((db.get('meta') as Meta).expShare).toBe(true)
+  await $.tool.call({ tool: 'Read', file_path: '/tmp/y' })
+  progress = db.get('progress') as Record<string, Progress>
+  expect([progress.a?.xp, progress.b?.xp]).toEqual([2, 0])
+  expect(progress.b?.xpFrac).toBe(0.5)
+  await $.tool.call({ tool: 'Read', file_path: '/tmp/z' })
+  progress = db.get('progress') as Record<string, Progress>
+  expect([progress.a?.xp, progress.b?.xp, progress.b?.xpFrac]).toEqual([3, 1, 0])
+
+  expect(await pokemon($, 'share-exp')).toBe('EXP Share off.')
+  expect((db.get('meta') as Meta).expShare).toBe(false)
+  await $.tool.call({ tool: 'Read', file_path: '/tmp/w' })
+  progress = db.get('progress') as Record<string, Progress>
+  expect([progress.b?.xp, progress.b?.xpFrac]).toEqual([1, 0])
+})
+
+test('EXP Share cannot be forced on without the unlock', async ($, on) => {
+  const a = mon('a', 2, 'charmander')
+  const b = mon('b', 67, 'eevee')
+  const { clock, db } = world(on, {
+    meta: meta({ expShare: true }), party: partyOf([a, b]), progress: progressOf([a, b]),
+  })
+  await start($, clock)
+  await $.tool.call({ tool: 'Read', file_path: '/tmp/x' })
+  const progress = db.get('progress') as Record<string, Progress>
+  expect([progress.b?.xp, progress.b?.xpFrac]).toEqual([0, 0])
+})
+
+test('a shared level-up starts an evolution with a longer wait', async ($, on) => {
+  const a = mon('a', 67, 'eevee')
+  const b = mon('b', 2, 'charmander')
+  const { clock, db } = world(on, {
+    meta: meta({ expShare: true, expShareUnlocked: true }), party: partyOf([a, b]),
+    progress: { ...progressOf([a]), b: { ...newProgress(15, 70, T0), xp: 18, xpFrac: 0.5 } },
+  })
+  await start($, clock)
+  await $.tool.call({ tool: 'Read', file_path: '/tmp/x' })
+  const evolving = (db.get('pending') as Choice[]).filter(c => c.kind === 'evolution')
+  expect(evolving.map(c => c.kind === 'evolution' && c.memberId)).toEqual(['b'])
+  expect(evolving[0]?.kind === 'evolution' && evolving[0].deadline - T0).toBe(600_001)
+})
+
+test('the share-exp command stays hidden until the feature is unlocked', async ($, on) => {
+  const a = mon('a', 2, 'charmander')
+  const { clock, db } = world(on, { meta: meta(), party: partyOf([a]), progress: progressOf([a]) })
+  await start($, clock)
+  const text = await pokemon($, 'share-exp')
+  expect(text).toContain('/pokemon')
+  expect(text).not.toContain('EXP Share on')
+  expect((db.get('meta') as Meta).expShare).toBe(undefined)
+})
+
+test('50 distinct Gen I caught unlock the hidden EXP Share, and it stays off', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const caught = Array.from({ length: 49 }, (_, i) => i + 1)
+  const waiting: Choice = {
+    kind: 'encounter', id: `enc-${H0}`, createdAt: T0, hour: H0, speciesId: 133, name: 'eevee', shiny: false, level: 5,
+    legendary: false, chain: parseForm(CHAINS[67], 'eevee'),
+  }
+  const { clock, state, db } = world(on, {
+    meta: meta(), party: partyOf([starter]), progress: progressOf([starter]),
+    dex: { seen: caught, caught, shinies: [] }, pending: [waiting],
+  })
+  await start($, clock)
+  expect(await pokemon($, 'keep')).toContain('Gotcha!')
+  const storedMeta = db.get('meta') as Meta
+  expect(storedMeta.expShareUnlocked).toBe(true)
+  expect(storedMeta.expShare).toBe(undefined)
+  expect(state.toasts.some(t => t.includes('/pokemon share-exp'))).toBe(true)
+})
+
+test('a lucky Gen I capture unlocks the EXP Share before 50', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  let salt = ''
+  for (let i = 0; i < 5000 && !salt; i++) {
+    const candidate = `roll-${i}`
+    if (expShareRoll(rngFor(candidate, H0 + 1, 'exp-share'))) salt = candidate
+  }
+  expect(salt).not.toBe('')
+  const waiting: Choice = {
+    kind: 'encounter', id: `enc-${H0 + 1}`, createdAt: (H0 + 1) * HOUR, hour: H0 + 1, speciesId: 37, name: 'vulpix',
+    shiny: false, level: 5, legendary: false, chain: parseForm(CHAINS[15], 'vulpix'),
+  }
+  const { clock, db } = world(on, {
+    meta: meta({ salt }), party: partyOf([starter]), progress: progressOf([starter]),
+    dex: { seen: [4], caught: [4], shinies: [] }, pending: [waiting],
+  })
+  await start($, clock)
+  expect(await pokemon($, 'keep')).toContain('Gotcha!')
+  expect((db.get('meta') as Meta).expShareUnlocked).toBe(true)
+})
+
+test('switching away from Gen I pauses the EXP Share count until it returns', async ($, on) => {
+  const starter = mon('s1', 2, 'charmander')
+  const caught = Array.from({ length: 50 }, (_, i) => i + 1)
+  const { clock, db } = world(on, {
+    meta: meta({ generation: 2 }), party: partyOf([starter]), progress: progressOf([starter]),
+    dex: { seen: caught, caught, shinies: [] },
+  })
+  await start($, clock)
+  expect((db.get('meta') as Meta).expShareUnlocked).toBe(undefined)
+  expect(await pokemon($, 'gen 1')).toContain('Generation I')
+  expect((db.get('meta') as Meta).expShareUnlocked).toBe(true)
+})
+
 test('parallel edits in one session all land', async ($, on) => {
   const a = mon('a', 2, 'charmander')
   const b = mon('b', 2, 'charmander')
@@ -541,27 +823,17 @@ test('parallel edits in one session all land', async ($, on) => {
 
 test('/party opens the pane, /party again closes it, and the pane has a Close button', async ($, on) => {
   const a = mon('a', 2, 'charmander')
-  const { clock } = world(on, { meta: meta(), party: partyOf([a]), progress: progressOf([a]) })
-  const open = new Set<string>()
-  on('ui.open', ($, e) => {
-    open.add(e.id)
-    return { value: { isPlaced: true } }
-  })
-  on('ui.close', ($, e) => {
-    open.delete(e.id)
-    return { value: undefined }
-  })
-  on('ui.panes', () => ({ value: [...open].map(id => ({ id, title: id, isShown: true, isFocused: false, isPlaced: true })) }))
+  const { clock, panes } = world(on, { meta: meta(), party: partyOf([a]), progress: progressOf([a]) })
   await start($, clock)
   await run($, 'party', '')
-  expect(open.has('pokemon-party')).toBe(true)
+  expect(panes.has('pokemon-party')).toBe(true)
   expect(await run($, 'party', '')).toBe('Party closed.')
-  expect(open.has('pokemon-party')).toBe(false)
+  expect(panes.has('pokemon-party')).toBe(false)
 
   await run($, 'party', '')
   const ui = await $.ui.mount({ plugin: 'pokemon', surface: 'terminal', component: 'Pane', requestId: 'pokemon-party', props: { title: 'Pokémon party', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } })
   await ui.press({ key: 'close-party' })
-  expect(open.has('pokemon-party')).toBe(false)
+  expect(panes.has('pokemon-party')).toBe(false)
   await ui.unmount()
 })
 

@@ -3,10 +3,11 @@ import { expect, test } from 'claude-code/testing'
 import type { ChainForm, Member, Meta, Progress } from '../types'
 import { classify, conditionsFor, fallbackLevel, parseForm, parseOffset } from '../hooks/pokeapi'
 import {
-  HOUR, encounterLevel, findTarget, friendshipStep, gainCall, generationCount, generationName, generationOf,
-  generationRange, isShiny, levelCapOf, levelCapValue, levelUpPaths, moodOf, newProgress, parseGeneration,
-  parseLevelCap, parseStage, rngFor, sortChoices, speciesIdFor, stageOf, stoneFor, stonePaths, stoneTarget,
-  timeMatches,
+  BOX_PAGE_SIZE, DEX_PAGE_SIZE, HOUR, SHARE_FACTOR, canStore, caughtInGeneration, encounterLevel,
+  expShareGeneration, expShareRoll, findTarget, friendshipStep, gainCall, gainExp, generationCount, generationName,
+  generationOf, generationRange, isShiny, levelCapOf, levelCapValue, levelUpPaths, moodOf, newProgress, pageCount,
+  parseGeneration, parseLevelCap, parseStage, rngFor, sortChoices, speciesIdFor, speciesPage, stageOf, stoneFor,
+  stonePaths, stoneTarget, timeMatches,
 } from '../hooks/rules'
 import { CHAINS } from './fixtures'
 
@@ -247,4 +248,54 @@ test('the encounter level never goes past the cap', async () => {
   expect(encounterLevel(5, () => 0.9, 20)).toBe(8)
   expect(encounterLevel(36, () => 0.9, 20)).toBe(20)
   expect(encounterLevel(36, () => 0.9)).toBe(39)
+})
+
+test('only a Lv. 100 Pokémon can be stored', async () => {
+  expect(canStore(99)).toBe(false)
+  expect(canStore(100)).toBe(true)
+  expect(canStore(101)).toBe(true)
+})
+
+test('a generation counts its own distinct caught species', async () => {
+  const caught = [1, 1, 2, 151, 152, 300]
+  expect(caughtInGeneration(caught, 1)).toBe(3)
+  expect(caughtInGeneration(caught, 2)).toBe(1)
+  expect(caughtInGeneration(caught, 'all')).toBe(5)
+  expect(expShareGeneration(1)).toBe(true)
+  expect(expShareGeneration('all')).toBe(true)
+  expect(expShareGeneration(2)).toBe(false)
+})
+
+test('pages of 30 tile a generation', async () => {
+  expect(BOX_PAGE_SIZE).toBe(30)
+  expect(DEX_PAGE_SIZE).toBe(30)
+  expect(speciesPage(1, 0, 30)).toHaveLength(30)
+  expect(speciesPage(1, 0, 30)[0]).toBe(1)
+  expect(speciesPage(1, 0, 30)[29]).toBe(30)
+  expect(speciesPage(1, 5, 30)).toEqual([151])
+  expect(speciesPage(1, 6, 30)).toEqual([])
+  expect(pageCount(1, 30)).toBe(6)
+  expect(pageCount('all', 30)).toBe(35)
+  expect(speciesPage('all', 0, 30)[0]).toBe(1)
+})
+
+test('a shared EXP gain is flat and the fractions still carry', async () => {
+  const now = 10 * HOUR
+  const first = gainExp(progress({ lastXpAt: now }), SHARE_FACTOR, now).progress
+  expect([first.xp, first.xpFrac]).toEqual([0, 0.5])
+  const second = gainExp(first, SHARE_FACTOR, now).progress
+  expect([second.xp, second.xpFrac]).toEqual([1, 0])
+})
+
+test('EXP Share rolls about 1 in 512', async () => {
+  let hits = 0
+  const trials = 51_200
+  for (let hour = 0; hour < trials; hour++) if (expShareRoll(rngFor('salt', hour, 'exp-share'))) hits++
+  expect(hits > 70 && hits < 130).toBe(true)
+})
+
+test('a box target is named as a box, not a party member', async () => {
+  const eevee = member('b', form(67, 'eevee'))
+  expect(findTarget([eevee], 'nope', 'boxes')).toEqual({ error: 'No Pokémon called "nope" in your boxes.' })
+  expect(findTarget([eevee], '1', 'boxes')).toEqual({ member: eevee })
 })
