@@ -16,6 +16,26 @@ At the prompt of a Claude Code terminal session, type:
 
 Answer `y` to add the marketplace, then pick a scope (user scope loads it in every session). It's active right away: Professor Oak appears above the prompt, so choose your starter.
 
+## Update
+
+If you installed the plugin from the marketplace, update it from a Claude Code session:
+
+```
+/plugin marketplace update pokeclaude
+/plugin update pokemon
+```
+
+Then restart Claude Code to apply the new version. `/plugin update pokemon` on its own is usually enough; refreshing the marketplace first makes sure the latest catalog is visible.
+
+Your party, Pokédex, bag and pending choices are kept. The Boxes start empty; the new generation view reads the Pokédex you already have.
+
+If you run from a local clone instead, update the clone and restart the session if the new code is not picked up:
+
+```
+cd ~/pokeclaude
+git pull --ff-only
+```
+
 ## Development
 
 To run it from a local copy instead:
